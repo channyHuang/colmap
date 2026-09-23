@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #pragma once
 
@@ -45,25 +18,42 @@ Eigen::Matrix3d CrossProductMatrix(const Eigen::Vector3d& vector);
 // Transforms point x from a to b as: x_in_b = R * x_in_a + t.
 struct Rigid3d {
  public:
-  Eigen::Quaterniond rotation = Eigen::Quaterniond::Identity();
-  Eigen::Vector3d translation = Eigen::Vector3d::Zero();
+  // Parameters stored as [qx, qy, qz, qw, tx, ty, tz].
+  Eigen::Vector7d params;
 
-  Rigid3d() = default;
+  Rigid3d() : params(0, 0, 0, 1, 0, 0, 0) {}
+
   Rigid3d(const Eigen::Quaterniond& rotation,
-          const Eigen::Vector3d& translation)
-      : rotation(rotation), translation(translation) {}
+          const Eigen::Vector3d& translation) {
+    params.head<4>() = rotation.coeffs();
+    params.tail<3>() = translation;
+  }
+
+  inline Eigen::Map<Eigen::Quaterniond> rotation() {
+    return Eigen::Map<Eigen::Quaterniond>(params.data());
+  }
+  inline Eigen::Map<const Eigen::Quaterniond> rotation() const {
+    return Eigen::Map<const Eigen::Quaterniond>(params.data());
+  }
+
+  inline Eigen::Map<Eigen::Vector3d> translation() {
+    return Eigen::Map<Eigen::Vector3d>(params.data() + 4);
+  }
+  inline Eigen::Map<const Eigen::Vector3d> translation() const {
+    return Eigen::Map<const Eigen::Vector3d>(params.data() + 4);
+  }
 
   inline Eigen::Matrix3x4d ToMatrix() const {
     Eigen::Matrix3x4d matrix;
-    matrix.leftCols<3>() = rotation.toRotationMatrix();
-    matrix.col(3) = translation;
+    matrix.leftCols<3>() = rotation().toRotationMatrix();
+    matrix.col(3) = translation();
     return matrix;
   }
 
   static inline Rigid3d FromMatrix(const Eigen::Matrix3x4d& matrix) {
     Rigid3d t;
-    t.rotation = Eigen::Quaterniond(matrix.leftCols<3>()).normalized();
-    t.translation = matrix.rightCols<1>();
+    t.rotation() = Eigen::Quaterniond(matrix.leftCols<3>()).normalized();
+    t.translation() = matrix.rightCols<1>();
     return t;
   }
 
@@ -71,30 +61,35 @@ struct Rigid3d {
   // [Reference] https://gtsam.org/2021/02/23/uncertainties-part3.html
   inline Eigen::Matrix6d Adjoint() const {
     Eigen::Matrix6d adjoint;
-    adjoint.block<3, 3>(0, 0) = rotation.toRotationMatrix();
+    adjoint.block<3, 3>(0, 0) = rotation().toRotationMatrix();
     adjoint.block<3, 3>(0, 3).setZero();
     adjoint.block<3, 3>(3, 0) =
-        adjoint.block<3, 3>(0, 0).colwise().cross(-translation);  // t x R
+        adjoint.block<3, 3>(0, 0).colwise().cross(-translation());  // t x R
     adjoint.block<3, 3>(3, 3) = adjoint.block<3, 3>(0, 0);
     return adjoint;
   }
 
   inline Eigen::Matrix6d AdjointInverse() const {
     Eigen::Matrix6d adjoint_inv;
-    adjoint_inv.block<3, 3>(0, 0) = rotation.toRotationMatrix().transpose();
+    adjoint_inv.block<3, 3>(0, 0) = rotation().toRotationMatrix().transpose();
     adjoint_inv.block<3, 3>(0, 3).setZero();
     adjoint_inv.block<3, 3>(3, 0) =
-        -adjoint_inv.block<3, 3>(0, 0) * CrossProductMatrix(translation);
+        -adjoint_inv.block<3, 3>(0, 0) * CrossProductMatrix(translation());
     adjoint_inv.block<3, 3>(3, 3) = adjoint_inv.block<3, 3>(0, 0);
     return adjoint_inv;
+  }
+
+  // Return the origin position of the target in the source frame.
+  inline Eigen::Vector3d TgtOriginInSrc() const {
+    return rotation().inverse() * -translation();
   }
 };
 
 // Return inverse transform.
 inline Rigid3d Inverse(const Rigid3d& b_from_a) {
   Rigid3d a_from_b;
-  a_from_b.rotation = b_from_a.rotation.inverse();
-  a_from_b.translation = a_from_b.rotation * -b_from_a.translation;
+  a_from_b.rotation() = b_from_a.rotation().inverse();
+  a_from_b.translation() = a_from_b.rotation() * -b_from_a.translation();
   return a_from_b;
 }
 
@@ -150,23 +145,25 @@ inline Eigen::Matrix6d GetCovarianceForRelativeRigid3d(
 // While you may want to instead write and execute it as:
 //      x_in_c = d_from_c * (c_from_b * (b_from_a * x_in_a))
 // which will apply the transformations as a chain on the point.
-inline Eigen::Vector3d operator*(const Rigid3d& t, const Eigen::Vector3d& x) {
-  return t.rotation * x + t.translation;
+inline Eigen::Vector3d operator*(const Rigid3d& t,
+                                 const Eigen::Ref<const Eigen::Vector3d>& x) {
+  return t.rotation() * x + t.translation();
 }
 
 // Concatenate transforms such one can write expressions like:
 //      d_from_a = d_from_c * c_from_b * b_from_a
 inline Rigid3d operator*(const Rigid3d& c_from_b, const Rigid3d& b_from_a) {
   Rigid3d c_from_a;
-  c_from_a.rotation = (c_from_b.rotation * b_from_a.rotation).normalized();
-  c_from_a.translation =
-      c_from_b.translation + (c_from_b.rotation * b_from_a.translation);
+  c_from_a.rotation() =
+      (c_from_b.rotation() * b_from_a.rotation()).normalized();
+  c_from_a.translation() =
+      c_from_b.translation() + (c_from_b.rotation() * b_from_a.translation());
   return c_from_a;
 }
 
 inline bool operator==(const Rigid3d& left, const Rigid3d& right) {
-  return left.rotation.coeffs() == right.rotation.coeffs() &&
-         left.translation == right.translation;
+  return left.rotation().coeffs() == right.rotation().coeffs() &&
+         left.translation() == right.translation();
 }
 inline bool operator!=(const Rigid3d& left, const Rigid3d& right) {
   return !(left == right);

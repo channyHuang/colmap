@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #pragma once
 
@@ -104,8 +77,8 @@ class Image {
   inline void SetFramePtr(class Frame* frame);
   inline void ResetFramePtr();
   inline bool HasFramePtr() const;
-  // Check if cam_from_world needs to be composed with sensor_from_rig pose.
-  inline bool HasTrivialFrame() const;
+  // Check if the image was captured by the reference sensor in the rig.
+  inline bool IsRefInFrame() const;
 
   // Composition of sensor_from_rig and rig_from_world transformations.
   // If the corresponding frame is trivial, this is equal to rig_from_world.
@@ -118,7 +91,7 @@ class Image {
   inline const std::vector<struct Point2D>& Points2D() const;
   inline std::vector<struct Point2D>& Points2D();
   void SetPoints2D(const std::vector<Eigen::Vector2d>& points);
-  void SetPoints2D(const std::vector<struct Point2D>& points);
+  void SetPoints2D(std::vector<struct Point2D> points);
 
   // Set the point as triangulated, i.e. it is part of a 3D point track.
   void SetPoint3DForPoint2D(point2D_t point2D_idx, point3D_t point3D_id);
@@ -144,28 +117,32 @@ class Image {
   inline bool operator!=(const Image& other) const;
 
  private:
-  // Identifier of the image, if not specified `kInvalidImageId`.
-  image_t image_id_;
-
   // The name of the image, i.e. the relative path.
   std::string name_;
+
+  // Pointer to the associated camera object.
+  struct Camera* camera_ptr_;
+
+  // Pointer to the corresponding frame object.
+  class Frame* frame_ptr_;
+
+  // All image points, including points that are not part of a 3D point track.
+  std::vector<struct Point2D> points2D_;
+
+  // Identifier of the image, if not specified `kInvalidImageId`.
+  image_t image_id_;
 
   // The identifier of the associated camera. Note that multiple images might
   // share the same camera. If not specified `kInvalidCameraId`.
   camera_t camera_id_;
-  struct Camera* camera_ptr_;
 
   // The corresponding frame of the image. Note that multiple images might
   // share the same frame. If not specified `kInvalidFrameId`.
   frame_t frame_id_;
-  class Frame* frame_ptr_;
 
   // The number of 3D points the image observes, i.e. the sum of its `points2D`
   // where `point3D_id != kInvalidPoint3DId`.
   point2D_t num_points3D_;
-
-  // All image points, including points that are not part of a 3D point track.
-  std::vector<struct Point2D> points2D_;
 };
 
 std::ostream& operator<<(std::ostream& stream, const Image& image);
@@ -221,7 +198,6 @@ bool Image::HasCameraPtr() const { return camera_ptr_ != nullptr; }
 frame_t Image::FrameId() const { return frame_id_; }
 
 void Image::SetFrameId(const frame_t frame_id) {
-  THROW_CHECK_NE(frame_id, kInvalidFrameId);
   THROW_CHECK(!HasFramePtr());
   frame_id_ = frame_id;
 }
@@ -249,7 +225,7 @@ void Image::ResetFramePtr() { frame_ptr_ = nullptr; }
 
 bool Image::HasFramePtr() const { return frame_ptr_ != nullptr; }
 
-bool Image::HasTrivialFrame() const {
+bool Image::IsRefInFrame() const {
   return THROW_CHECK_NOTNULL(frame_ptr_)
       ->RigPtr()
       ->IsRefSensor(sensor_t(SensorType::CAMERA, camera_id_));

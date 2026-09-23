@@ -9,8 +9,8 @@ https://demuc.de/colmap/.
 
 An overview of system packages for Linux/Unix/BSD distributions are available at
 https://repology.org/metapackage/colmap/versions. Note that the COLMAP packages
-in the default repositories for Linux/Unix/BSD do not come with CUDA support,
-which requires a manual build from source, as explained further below.
+in the default repositories for Linux/Unix/BSD do not come with CUDA or HIP/ROCm
+support, which requires a manual build from source, as explained further below.
 
 For Mac users, `Homebrew <https://brew.sh>`__ provides a formula for COLMAP with
 pre-compiled binaries or the option to build from source. After installing
@@ -68,7 +68,7 @@ Windows, compute clusters, or if you do not have root access under Linux or Mac.
 Debian/Ubuntu
 -------------
 
-*Recommended dependencies:* CUDA (at least version 7.X)
+*Recommended dependencies:* CUDA (at least version 11.X)
 
 Dependencies from the default Ubuntu repositories::
 
@@ -81,7 +81,8 @@ Dependencies from the default Ubuntu repositories::
         libboost-graph-dev \
         libboost-system-dev \
         libeigen3-dev \
-        libfreeimage-dev \
+        libopenimageio-dev \
+        openimageio-tools \
         libmetis-dev \
         libgoogle-glog-dev \
         libgtest-dev \
@@ -91,16 +92,21 @@ Dependencies from the default Ubuntu repositories::
         qt6-base-dev \
         libqt6opengl6-dev \
         libqt6openglwidgets6 \
+        qt6-svg-dev \
         libcgal-dev \
         libceres-dev \
         libsuitesparse-dev \
         libcurl4-openssl-dev \
         libssl-dev \
         libmkl-full-dev
+    # Fix issue in Ubuntu's openimageio CMake config.
+    # We don't depend on any of openimageio's OpenCV functionality,
+    # but it still requires the OpenCV include directory to exist.
+    sudo mkdir -p /usr/include/opencv4
 
 Alternatively, you can also build against Qt 5 instead of Qt 6 using::
 
-    qtbase5-dev libqt5opengl5-dev
+    qtbase5-dev libqt5opengl5-dev libqt5svg5-dev
 
 To compile with **CUDA support**, also install Ubuntu's default CUDA package::
 
@@ -113,6 +119,37 @@ configuration, specify ``-DCMAKE_CUDA_ARCHITECTURES=native``, if you want to run
 COLMAP only on your current machine (default), "all"/"all-major" to be able to
 distribute to other machines, or a specific CUDA architecture like "75", etc.
 
+To compile with **HIP / ROCm support** instead of CUDA (for AMD GPUs), install
+ROCm following the `AMD ROCm installation guide
+<https://rocm.docs.amd.com/projects/install-on-linux/en/latest/>`__ and ensure
+the ``hip``, ``hiprand``, and ``rocrand`` packages are present (default
+location ``/opt/rocm``). Then pass the following flags at configure time::
+
+    cmake .. -GNinja \
+        -DCUDA_ENABLED=OFF \
+        -DHIP_ENABLED=ON \
+        -DCMAKE_HIP_ARCHITECTURES=gfx90a \
+        -DCMAKE_HIP_COMPILER=/opt/rocm/llvm/bin/clang++
+
+Set ``CMAKE_HIP_ARCHITECTURES`` to match the target AMD GPU
+(``gfx90a`` for MI200/MI250, ``gfx942`` for MI300, ``gfx1030`` for RDNA2,
+``gfx1100`` for RDNA3, etc.; multiple values can be passed as a
+semicolon-separated list). ``CUDA_ENABLED`` and ``HIP_ENABLED`` are mutually
+exclusive. CMake 3.21 or newer is required for the HIP backend. On RDNA3
+consumer parts where ROCm only officially supports a subset of architectures,
+you may also need ``HSA_OVERRIDE_GFX_VERSION=11.0.0`` in the runtime
+environment. The HIP backend currently accelerates dense reconstruction
+(``patch_match_stereo``); see the changelog for ongoing coverage.
+
+If ROCm is installed through a Python wheel / virtualenv (for example AMD's
+TheRock packaging, which puts a ``rocm-sdk`` command on the ``PATH``), the
+install root and target architectures are detected automatically from
+``rocm-sdk path --root`` and ``rocm-sdk targets``, so ``ROCM_PATH`` and
+``CMAKE_HIP_ARCHITECTURES`` need not be set by hand. An explicit
+``-DROCM_PATH`` or a ``ROCM_PATH`` environment variable still takes
+precedence, and CMake's own architecture autodetection sets
+``CMAKE_HIP_ARCHITECTURES`` when a target GPU is visible at configure time.
+
 Configure and compile COLMAP::
 
     git clone https://github.com/colmap/colmap.git
@@ -122,6 +159,24 @@ Configure and compile COLMAP::
     cmake .. -GNinja -DBLA_VENDOR=Intel10_64lp
     ninja
     sudo ninja install
+
+.. note::
+
+    COLMAP uses ``boost::unordered`` flat/node hash maps for the
+    performance-critical scene and SfM containers. These are data members of
+    classes in public headers, so their layout is part of COLMAP's ABI, and a
+    mismatch between two COLMAP builds loaded into one process produces no link
+    error, only memory corruption. There is therefore no build option to swap
+    them for ``std::unordered_*``.
+
+    ``boost::unordered_node_map`` requires **Boost >= 1.84**, which is newer than
+    the apt Boost on Ubuntu 24.04 (1.83) and earlier. Where the available Boost
+    is new enough it is used as it is and nothing is downloaded. Only where it
+    is too old does the build download a pinned Boost release (about 100 MB) and
+    build the libraries COLMAP uses from source, installing them alongside
+    COLMAP. Only Boost is taken from that copy, so its headers and compiled
+    libraries always match. Pass ``-DFETCH_BOOST=OFF`` to require a new enough
+    system Boost instead and fail at configure time if there is none.
 
 Run COLMAP::
 
@@ -142,17 +197,84 @@ implementation of BLAS. If you decide to compile against OpenBLAS instead of
 MKL, you must install and select the OpenMP version under Debian/Ubuntu because
 of `this issue <https://github.com/facebookresearch/faiss/wiki/Troubleshooting#surprising-faiss-openmp-and-openblas-interaction>`__.
 
+Fedora
+------
+
+*Recommended dependencies:* CUDA (at least version 11.X)
+
+Dependencies from the default Fedora repositories::
+
+    sudo dnf install -y \
+        git \
+        cmake \
+        ninja-build \
+        gcc-c++ \
+        boost-devel \
+        eigen3-devel \
+        OpenImageIO-devel \
+        OpenImageIO-utils \
+        metis-devel \
+        glog-devel \
+        gtest-devel \
+        gmock-devel \
+        sqlite-devel \
+        glew-devel \
+        qt6-qtbase-devel \
+        qt6-qtsvg-devel \
+        CGAL-devel \
+        ceres-solver-devel \
+        suitesparse-devel \
+        suitesparse-static \
+        libcurl-devel \
+        openssl-devel \
+        openblas-devel
+    # suitesparse-static is required even for a dynamic build, because Fedora's
+    # SuiteSparse CMake config references the static targets file regardless of
+    # link type. This can be dropped once Fedora ships SuiteSparse >= 7.11.0 with
+    # its separated static config.
+
+Alternatively, you can also build against Qt 5 instead of Qt 6 using::
+
+    qt5-qtbase-devel qt5-qtsvg-devel
+
+To compile with **CUDA support**, install the CUDA toolkit from NVIDIA's official
+Fedora repository, which (unlike the plain ``cuda`` meta-package) preserves an
+existing NVIDIA driver. Replace ``<VERSION>`` with your Fedora release, e.g.
+``43``::
+
+    sudo dnf config-manager addrepo --from-repofile=https://developer.download.nvidia.com/compute/cuda/repos/fedora<VERSION>/x86_64/cuda-fedora<VERSION>.repo
+    sudo dnf install -y cuda-toolkit
+
+During CMake configuration, specify ``-DCMAKE_CUDA_ARCHITECTURES=native``, if you
+want to run COLMAP only on your current machine (default), "all"/"all-major" to be
+able to distribute to other machines, or a specific CUDA architecture like "89", etc.
+
+Configure and compile COLMAP::
+
+    git clone https://github.com/colmap/colmap.git
+    cd colmap
+    mkdir build
+    cd build
+    cmake .. -GNinja -DCMAKE_CUDA_ARCHITECTURES=native
+    ninja
+    sudo ninja install
+
+Run COLMAP::
+
+    colmap -h
+    colmap gui
+
 Mac
 ---
 
-Dependencies from `Homebrew <http://brew.sh/>`__::
+Dependencies from `Homebrew <https://brew.sh/>`__::
 
     brew install \
         cmake \
         ninja \
         boost \
         eigen \
-        freeimage \
+        openimageio \
         curl \
         libomp \
         metis \
@@ -172,7 +294,7 @@ Configure and compile COLMAP::
     cd colmap
     mkdir build
     cd build
-    cmake -GNinja
+    cmake .. -GNinja
     ninja
     sudo ninja install
 
@@ -191,7 +313,7 @@ Run COLMAP::
 Windows
 -------
 
-*Recommended dependencies:* CUDA (at least version 7.X), Visual Studio 2019
+*Recommended dependencies:* CUDA (at least version 11.X), Visual Studio 2019 or newer
 
 On Windows, the recommended way is to build COLMAP using VCPKG::
 
@@ -241,10 +363,10 @@ vcpkg, first run ``./vcpkg integrate install`` (under Windows use pwsh and
     cmake .. -DCMAKE_TOOLCHAIN_FILE=path/to/vcpkg/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release
     cmake --build . --config release --target colmap --parallel 24
 
-Anaconda
---------
+Anaconda/Mamba
+--------------
 
-Install miniconda and run the following commands::
+Install miniconda and run the following commands. You can replace ``conda`` with ``mamba`` for faster package installation::
 
     conda create -n colmap python=3.12
     conda config --add channels conda-forge
@@ -255,7 +377,7 @@ Install miniconda and run the following commands::
         boost \
         ccache \
         eigen \
-        freeimage \
+        openimageio \
         curl \
         metis \
         glog \
@@ -265,7 +387,6 @@ Install miniconda and run the following commands::
         qt \
         glew \
         sqlite \
-        glew \
         cgal-cpp \
         mesa-libgl-devel-cos7-x86_64 \
         cuda-compiler==12.6.2 \
@@ -343,6 +464,31 @@ Then compile and run your code as::
 The sources of this example are stored under ``doc/sample-project``.
 
 ----------------
+Shared Libraries
+----------------
+
+By default, COLMAP builds static libraries. To build shared/dynamic libraries
+instead, enable the ``BUILD_SHARED_LIBS`` option::
+
+    cmake .. -GNinja -DBUILD_SHARED_LIBS=ON
+
+Trade-offs compared to static libraries:
+
+- **Faster incremental linking**: Only the changed shared library needs to be
+  re-linked during development, rather than all executables.
+- **Reduced disk usage**: Multiple executables share the same library files on
+  disk and in memory.
+- **No cross-library optimization**: The compiler cannot inline or apply
+  link-time optimization (LTO/IPO) across shared library boundaries, which
+  reduces runtime performance.
+- **Symbol resolution overhead**: The dynamic linker resolves symbols at load
+  time, adding minor startup cost and indirect call overhead.
+
+For development workflows, shared libraries can significantly speed up
+edit-compile-test cycles. For production or benchmarking, static libraries are
+recommended.
+
+----------------
 AddressSanitizer
 ----------------
 
@@ -362,14 +508,29 @@ meaningful traces for reported issues.
 Documentation
 -------------
 
-In order to build the documentation, a Python installation is required. Then, follow these commands:
+1. Install latest pycolmap for up-to-date pycolmap API documentation.
+2. Build the documentation::
 
-    cd path/to/colmap/doc
-    pip install -r requirements.txt
-    make html
-    open _build/html/index.html # preview results
+        cd path/to/colmap/doc
+        pip install -r requirements.txt
+        make html
+        open _build/html/index.html # preview results
 
-Alternatively, you can build the documentation as PDF, EPUB, etc.::
+   Alternatively, you can build the documentation as PDF, EPUB, etc.::
 
-    make latexpdf
-    open _build/pdf/COLMAP.pdf
+        make latexpdf
+        open _build/pdf/COLMAP.pdf
+
+Publishing to the website (`colmap.github.io <https://colmap.github.io/>`__) is
+automated: whenever documentation-relevant files change on ``main``, the CI
+pipeline builds these docs and pushes the result to the ``master`` branch of the
+`colmap/colmap.github.io <https://github.com/colmap/colmap.github.io>`__
+repository. Pull requests that touch the docs build them too and upload the
+generated HTML as a downloadable ``docs-preview`` artifact for review, without
+publishing. The manual steps above are therefore only needed to preview the docs
+locally.
+
+For a main release, still copy the previous release as legacy to the "legacy"
+folder in the website repository, under a folder with the release number
+(`see here <https://github.com/colmap/colmap.github.io/tree/master/legacy>`__).
+The automated deploy preserves the existing ``legacy`` folder.

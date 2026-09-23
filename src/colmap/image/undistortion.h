@@ -1,39 +1,11 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #pragma once
 
 #include "colmap/geometry/rigid3.h"
+#include "colmap/image/warp.h"
 #include "colmap/scene/reconstruction.h"
 #include "colmap/sensor/bitmap.h"
-#include "colmap/util/base_controller.h"
-#include "colmap/util/file.h"
 
 namespace colmap {
 
@@ -57,125 +29,18 @@ struct UndistortCameraOptions {
   double roi_min_y = 0.0;
   double roi_max_x = 1.0;
   double roi_max_y = 1.0;
-};
 
-// Undistort images and export undistorted cameras, as required by the
-// mvs::PatchMatchController class.
-class COLMAPUndistorter : public BaseController {
- public:
-  COLMAPUndistorter(
-      const UndistortCameraOptions& options,
-      const Reconstruction& reconstruction,
-      const std::string& image_path,
-      const std::string& output_path,
-      int num_related_images = 20,
-      CopyType copy_type = CopyType::COPY,
-      const std::vector<image_t>& image_ids = std::vector<image_t>());
+  // Maximum norm of the undistorted camera-space point (= tan(theta) where
+  // theta is the angle from the optical axis) used when tracing border pixels
+  // to compute the output image dimensions. For fisheye cameras with off-center
+  // principal points, border pixels outside the valid fisheye circle can have
+  // theta approaching pi/2, causing tan(theta) to diverge and producing extreme
+  // output dimensions. Points with norm exceeding this threshold are skipped.
+  // Set to -1 to disable the check (default).
+  double max_cam_point_norm = -1;
 
-  void Run();
-
- private:
-  bool Undistort(image_t image_id) const;
-  void WritePatchMatchConfig() const;
-  void WriteFusionConfig() const;
-  void WriteScript(bool geometric) const;
-
-  UndistortCameraOptions options_;
-  const std::string image_path_;
-  const std::string output_path_;
-  const CopyType copy_type_;
-  const int num_patch_match_src_images_;
-  const Reconstruction& reconstruction_;
-  const std::vector<image_t> image_ids_;
-  std::vector<std::string> image_names_;
-};
-
-// Undistort images and prepare data for CMVS/PMVS.
-class PMVSUndistorter : public BaseController {
- public:
-  PMVSUndistorter(const UndistortCameraOptions& options,
-                  const Reconstruction& reconstruction,
-                  const std::string& image_path,
-                  const std::string& output_path);
-
-  void Run();
-
- private:
-  bool Undistort(size_t reg_image_idx) const;
-  void WriteVisibilityData() const;
-  void WriteOptionFile() const;
-  void WritePMVSScript() const;
-  void WriteCMVSPMVSScript() const;
-  void WriteCOLMAPScript(bool geometric) const;
-  void WriteCMVSCOLMAPScript(bool geometric) const;
-
-  UndistortCameraOptions options_;
-  std::string image_path_;
-  std::string output_path_;
-  const Reconstruction& reconstruction_;
-};
-
-// Undistort images and prepare data for CMP-MVS.
-class CMPMVSUndistorter : public BaseController {
- public:
-  CMPMVSUndistorter(const UndistortCameraOptions& options,
-                    const Reconstruction& reconstruction,
-                    const std::string& image_path,
-                    const std::string& output_path);
-
-  void Run();
-
- private:
-  bool Undistort(size_t reg_image_idx) const;
-
-  UndistortCameraOptions options_;
-  std::string image_path_;
-  std::string output_path_;
-  const Reconstruction& reconstruction_;
-};
-
-// Undistort images and export undistorted cameras without the need for a
-// reconstruction. Instead, the image names and camera model information are
-// read from a text file.
-class PureImageUndistorter : public BaseController {
- public:
-  PureImageUndistorter(const UndistortCameraOptions& options,
-                       const std::string& image_path,
-                       const std::string& output_path,
-                       const std::vector<std::pair<std::string, Camera>>&
-                           image_names_and_cameras);
-
-  void Run();
-
- private:
-  bool Undistort(size_t reg_image_idx) const;
-
-  UndistortCameraOptions options_;
-  std::string image_path_;
-  std::string output_path_;
-  const std::vector<std::pair<std::string, Camera>>& image_names_and_cameras_;
-};
-
-// Rectify stereo image pairs.
-class StereoImageRectifier : public BaseController {
- public:
-  StereoImageRectifier(
-      const UndistortCameraOptions& options,
-      const Reconstruction& reconstruction,
-      const std::string& image_path,
-      const std::string& output_path,
-      const std::vector<std::pair<image_t, image_t>>& stereo_pairs);
-
-  void Run();
-
- private:
-  void Rectify(image_t image_id1, image_t image_id2) const;
-
-  UndistortCameraOptions options_;
-  std::string image_path_;
-  std::string output_path_;
-  const std::vector<std::pair<image_t, image_t>>& stereo_pairs_;
-  const Reconstruction& reconstruction_;
+  // Options controlling image warping during undistortion.
+  WarpImageOptions warp_options;
 };
 
 // Undistort camera by resizing the image and shifting the principal point.

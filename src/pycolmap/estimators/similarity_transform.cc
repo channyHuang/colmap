@@ -1,4 +1,6 @@
-#include "colmap/estimators/similarity_transform.h"
+// SPDX-License-Identifier: BSD-3-Clause
+
+#include "colmap/estimators/solvers/similarity_transform.h"
 
 #include "colmap/math/random.h"
 #include "colmap/optim/loransac.h"

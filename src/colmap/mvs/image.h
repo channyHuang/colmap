@@ -1,42 +1,10 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #pragma once
 
 #include "colmap/sensor/bitmap.h"
 
-#include <cstdint>
-#include <fstream>
-#include <set>
-#include <string>
-#include <unordered_map>
-#include <vector>
+#include <filesystem>
 
 namespace colmap {
 namespace mvs {
@@ -44,7 +12,7 @@ namespace mvs {
 class Image {
  public:
   Image();
-  Image(const std::string& path,
+  Image(const std::filesystem::path& path,
         size_t width,
         size_t height,
         const float* K,
@@ -54,10 +22,10 @@ class Image {
   inline size_t GetWidth() const;
   inline size_t GetHeight() const;
 
-  void SetBitmap(const Bitmap& bitmap);
+  void SetBitmap(Bitmap bitmap);
   inline const Bitmap& GetBitmap() const;
 
-  inline const std::string& GetPath() const;
+  inline const std::filesystem::path& GetPath() const;
   inline const float* GetR() const;
   inline const float* GetT() const;
   inline const float* GetK() const;
@@ -70,9 +38,9 @@ class Image {
   void Downsize(size_t max_width, size_t max_height);
 
  private:
-  std::string path_;
-  size_t width_;
-  size_t height_;
+  std::filesystem::path path_;
+  size_t width_ = 0;
+  size_t height_ = 0;
   float K_[9];
   float R_[9];
   float T_[3];
@@ -112,7 +80,7 @@ size_t Image::GetHeight() const { return height_; }
 
 const Bitmap& Image::GetBitmap() const { return bitmap_; }
 
-const std::string& Image::GetPath() const { return path_; }
+const std::filesystem::path& Image::GetPath() const { return path_; }
 
 const float* Image::GetR() const { return R_; }
 

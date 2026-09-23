@@ -1,54 +1,27 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/scene/image.h"
 
 namespace colmap {
 
 Image::Image()
-    : image_id_(kInvalidImageId),
-      name_(""),
-      camera_id_(kInvalidCameraId),
+    : name_(""),
       camera_ptr_(nullptr),
-      frame_id_(kInvalidFrameId),
       frame_ptr_(nullptr),
+      image_id_(kInvalidImageId),
+      camera_id_(kInvalidCameraId),
+      frame_id_(kInvalidFrameId),
       num_points3D_(0) {}
 
 Image::Image(const Image& other)
-    : image_id_(other.ImageId()),
-      name_(other.Name()),
-      camera_id_(other.CameraId()),
+    : name_(other.Name()),
       camera_ptr_(other.HasCameraPtr() ? other.CameraPtr() : nullptr),
-      frame_id_(other.FrameId()),
       frame_ptr_(other.HasFramePtr() ? other.FramePtr() : nullptr),
-      num_points3D_(other.NumPoints3D()),
-      points2D_(other.Points2D()) {}
+      points2D_(other.Points2D()),
+      image_id_(other.ImageId()),
+      camera_id_(other.CameraId()),
+      frame_id_(other.FrameId()),
+      num_points3D_(other.NumPoints3D()) {}
 
 Image& Image::operator=(const Image& other) {
   if (this != &other) {
@@ -79,9 +52,9 @@ void Image::SetPoints2D(const std::vector<Eigen::Vector2d>& points) {
   }
 }
 
-void Image::SetPoints2D(const std::vector<struct Point2D>& points) {
+void Image::SetPoints2D(std::vector<struct Point2D> points) {
   THROW_CHECK(points2D_.empty());
-  points2D_ = points;
+  points2D_ = std::move(points);
   num_points3D_ = 0;
   for (const auto& point2D : points2D_) {
     if (point2D.HasPoint3D()) {
@@ -117,11 +90,11 @@ bool Image::HasPoint3D(const point3D_t point3D_id) const {
 }
 
 Eigen::Vector3d Image::ProjectionCenter() const {
-  return CamFromWorld().rotation.inverse() * -CamFromWorld().translation;
+  return CamFromWorld().TgtOriginInSrc();
 }
 
 Eigen::Vector3d Image::ViewingDirection() const {
-  return CamFromWorld().rotation.toRotationMatrix().row(2);
+  return CamFromWorld().rotation().toRotationMatrix().row(2);
 }
 
 std::optional<Eigen::Vector2d> Image::ProjectPoint(
@@ -135,16 +108,12 @@ std::ostream& operator<<(std::ostream& stream, const Image& image) {
   stream << "Image(image_id="
          << (image.ImageId() != kInvalidImageId
                  ? std::to_string(image.ImageId())
-                 : "Invalid");
-  if (!image.HasCameraPtr()) {
-    stream << ", camera_id="
-           << (image.HasCameraId() ? std::to_string(image.CameraId())
-                                   : "Invalid");
-  } else {
-    stream << ", camera=Camera(camera_id=" << std::to_string(image.CameraId())
-           << ")";
-  }
-  stream << ", name=\"" << image.Name() << "\""
+                 : "Invalid")
+         << ", camera_id="
+         << (image.HasCameraId() ? std::to_string(image.CameraId()) : "Invalid")
+         << ", frame_id="
+         << (image.HasFrameId() ? std::to_string(image.FrameId()) : "Invalid")
+         << ", name=\"" << image.Name() << "\""
          << ", has_pose=" << image.HasPose()
          << ", triangulated=" << image.NumPoints3D() << "/"
          << image.NumPoints2D() << ")";

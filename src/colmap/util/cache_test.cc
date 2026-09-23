@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/util/cache.h"
 
@@ -434,6 +407,99 @@ TEST(ThreadSafeLRUCache, Clear) {
   EXPECT_EQ(*cache.Get(0), 0);
   EXPECT_EQ(cache.NumElems(), 1);
   EXPECT_TRUE(cache.Exists(0));
+}
+
+TEST(LRUCache, ExceptionSafety) {
+  // If load_fn_ throws, the cache should remain in a consistent state.
+  int load_count = 0;
+  LRUCache<int, int> cache(5, [&load_count](const int key) {
+    ++load_count;
+    if (key == 3) {
+      throw std::runtime_error("load failed");
+    }
+    return std::make_shared<int>(key * 10);
+  });
+
+  // Load some initial entries.
+  EXPECT_EQ(*cache.Get(0), 0);
+  EXPECT_EQ(*cache.Get(1), 10);
+  EXPECT_EQ(*cache.Get(2), 20);
+  EXPECT_EQ(cache.NumElems(), 3);
+
+  // Attempting to load key=3 should throw.
+  EXPECT_THROW(cache.Get(3), std::runtime_error);
+
+  // The cache should still be in a valid state with the original 3 entries.
+  EXPECT_EQ(cache.NumElems(), 3);
+  EXPECT_TRUE(cache.Exists(0));
+  EXPECT_TRUE(cache.Exists(1));
+  EXPECT_TRUE(cache.Exists(2));
+  EXPECT_FALSE(cache.Exists(3));
+
+  // Existing entries should still be retrievable.
+  EXPECT_EQ(*cache.Get(0), 0);
+  EXPECT_EQ(*cache.Get(1), 10);
+  EXPECT_EQ(*cache.Get(2), 20);
+
+  // Loading a new valid key should work fine.
+  EXPECT_EQ(*cache.Get(4), 40);
+  EXPECT_EQ(cache.NumElems(), 4);
+  EXPECT_TRUE(cache.Exists(4));
+}
+
+TEST(MemoryConstrainedLRUCache, PopNumBytesConsistency) {
+  // Pop should maintain correct num_bytes tracking.
+  MemoryConstrainedLRUCache<int, SizedElem> cache(
+      100, [](const int key) { return std::make_shared<SizedElem>(key); });
+
+  cache.Get(10);
+  cache.Get(20);
+  cache.Get(5);
+  EXPECT_EQ(cache.NumBytes(), 35);
+  EXPECT_EQ(cache.NumElems(), 3);
+
+  // Pop should remove the LRU element (key=10, 10 bytes) and update num_bytes.
+  cache.Pop();
+  EXPECT_EQ(cache.NumBytes(), 25);
+  EXPECT_EQ(cache.NumElems(), 2);
+
+  cache.Pop();
+  EXPECT_EQ(cache.NumBytes(), 5);
+  EXPECT_EQ(cache.NumElems(), 1);
+
+  cache.Pop();
+  EXPECT_EQ(cache.NumBytes(), 0);
+  EXPECT_EQ(cache.NumElems(), 0);
+
+  // Pop on empty cache should be safe.
+  cache.Pop();
+  EXPECT_EQ(cache.NumBytes(), 0);
+  EXPECT_EQ(cache.NumElems(), 0);
+}
+
+TEST(MemoryConstrainedLRUCache, UpdateNumBytesConsistency) {
+  // Should correctly track byte counts even when elements shrink.
+  MemoryConstrainedLRUCache<int, SizedElem> cache(
+      100, [](const int key) { return std::make_shared<SizedElem>(key); });
+
+  cache.Get(10);
+  cache.Get(20);
+  EXPECT_EQ(cache.NumBytes(), 30);
+
+  // Shrink element from 20 bytes to 5 bytes.
+  cache.Get(20)->num_bytes = 5;
+  cache.UpdateNumBytes(20);
+  EXPECT_EQ(cache.NumBytes(), 15);
+
+  // Shrink element to 0 bytes.
+  cache.Get(10)->num_bytes = 0;
+  cache.UpdateNumBytes(10);
+  EXPECT_EQ(cache.NumBytes(), 5);
+
+  // Grow it back.
+  cache.Get(10)->num_bytes = 8;
+  cache.UpdateNumBytes(10);
+  EXPECT_EQ(cache.NumBytes(), 13);
 }
 
 }  // namespace

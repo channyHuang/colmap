@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/mvs/gpu_mat_ref_image.h"
 #include "colmap/util/cudacc.h"
@@ -37,9 +10,9 @@ namespace mvs {
 namespace {
 
 __global__ void FilterKernel(const cudaTextureObject_t image_texture,
-                             GpuMat<uint8_t> image,
-                             GpuMat<float> sum_image,
-                             GpuMat<float> squared_sum_image,
+                             GpuMatView<uint8_t> image,
+                             GpuMatView<float> sum_image,
+                             GpuMatView<float> squared_sum_image,
                              const int window_radius,
                              const int window_step,
                              const float sigma_spatial,
@@ -83,11 +56,11 @@ __global__ void FilterKernel(const cudaTextureObject_t image_texture,
 }  // namespace
 
 GpuMatRefImage::GpuMatRefImage(const size_t width, const size_t height)
-    : height_(height), width_(width) {
-  image.reset(new GpuMat<uint8_t>(width, height));
-  sum_image.reset(new GpuMat<float>(width, height));
-  squared_sum_image.reset(new GpuMat<float>(width, height));
-}
+    : image(std::make_unique<GpuMat<uint8_t>>(width, height)),
+      sum_image(std::make_unique<GpuMat<float>>(width, height)),
+      squared_sum_image(std::make_unique<GpuMat<float>>(width, height)),
+      width_(width),
+      height_(height) {}
 
 void GpuMatRefImage::Filter(const uint8_t* image_data,
                             const size_t window_radius,
@@ -110,9 +83,9 @@ void GpuMatRefImage::Filter(const uint8_t* image_data,
                        (height_ - 1) / block_size.y + 1);
 
   FilterKernel<<<grid_size, block_size>>>(image_texture->GetObj(),
-                                          *image,
-                                          *sum_image,
-                                          *squared_sum_image,
+                                          image->View(),
+                                          sum_image->View(),
+                                          squared_sum_image->View(),
                                           window_radius,
                                           window_step,
                                           sigma_spatial,

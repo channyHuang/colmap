@@ -1,38 +1,11 @@
-# Copyright (c), ETH Zurich and UNC Chapel Hill.
-# All rights reserved.
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-#     * Redistributions of source code must retain the above copyright
-#       notice, this list of conditions and the following disclaimer.
-#
-#     * Redistributions in binary form must reproduce the above copyright
-#       notice, this list of conditions and the following disclaimer in the
-#       documentation and/or other materials provided with the distribution.
-#
-#     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-#       its contributors may be used to endorse or promote products derived
-#       from this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-# POSSIBILITY OF SUCH DAMAGE.
-
+# SPDX-License-Identifier: BSD-3-Clause
 
 set(FOLDER_NAME "ui")
 
 set(COLMAP_UI_QT_LIBS
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::OpenGL
+    Qt${QT_VERSION_MAJOR}::Svg
     Qt${QT_VERSION_MAJOR}::Widgets
 )
 
@@ -52,14 +25,15 @@ COLMAP_ADD_LIBRARY(
         feature_extraction_widget.h feature_extraction_widget.cc
         feature_matching_widget.h feature_matching_widget.cc
         image_viewer_widget.h image_viewer_widget.cc
-        license_widget.h license_widget.cc
         line_painter.h line_painter.cc
         log_widget.h log_widget.cc
         main_window.h main_window.cc
         match_matrix_widget.h match_matrix_widget.cc
+        mesh_painter.h mesh_painter.cc
         model_viewer_widget.h model_viewer_widget.cc
         movie_grabber_widget.h movie_grabber_widget.cc
         options_widget.h options_widget.cc
+        painter_base.h painter_base.cc
         point_painter.h point_painter.cc
         point_viewer_widget.h point_viewer_widget.cc
         project_widget.h project_widget.cc
@@ -80,3 +54,6 @@ COLMAP_ADD_LIBRARY(
         colmap_controllers
         ${COLMAP_UI_QT_LIBS}
 )
+if(MVS_ENABLED)
+    target_link_libraries(colmap_ui PUBLIC colmap_mvs)
+endif()

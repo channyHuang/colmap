@@ -1,40 +1,13 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/optim/least_absolute_deviations.h"
 
+#include "colmap/optim/sparse_cholesky.h"
 #include "colmap/util/eigen_alignment.h"
 #include "colmap/util/logging.h"
 
 #include <memory>
 
-#include <Eigen/CholmodSupport>
 #include <Eigen/SparseCholesky>
 
 namespace colmap {
@@ -53,10 +26,26 @@ Eigen::VectorXd Shrinkage(const Eigen::VectorXd& a, const double kappa) {
   return a_plus_kappa.cwiseMin(0) + a_minus_kappa.cwiseMax(0);
 }
 
+Eigen::SparseMatrix<double> NormalEquations(
+    const Eigen::SparseMatrix<double>& A, double ridge_regularization) {
+  Eigen::SparseMatrix<double> AtA = A.transpose() * A;
+  if (ridge_regularization > 0) {
+    // The diagonal of A^T A is populated whenever the corresponding column of
+    // A has any non-zero entry, so coeffRef is cheap (no insertion).
+    for (int i = 0; i < AtA.cols(); ++i) {
+      AtA.coeffRef(i, i) += ridge_regularization;
+    }
+  }
+  return AtA;
+}
+
 struct SimplicialLLTLinearSolver
     : public LeastAbsoluteDeviationLinearSolverImpl {
+  explicit SimplicialLLTLinearSolver(double ridge_regularization)
+      : ridge_regularization_(ridge_regularization) {}
+
   bool Compute(const Eigen::SparseMatrix<double>& A) override {
-    linear_solver_.compute(A.transpose() * A);
+    linear_solver_.compute(NormalEquations(A, ridge_regularization_));
     return linear_solver_.info() == Eigen::Success;
   }
 
@@ -67,34 +56,39 @@ struct SimplicialLLTLinearSolver
 
  private:
   Eigen::SimplicialLLT<Eigen::SparseMatrix<double>> linear_solver_;
+  const double ridge_regularization_;
 };
 
 struct SupernodalCholmodLLTLinearSolver
     : public LeastAbsoluteDeviationLinearSolverImpl {
+  explicit SupernodalCholmodLLTLinearSolver(double ridge_regularization)
+      : ridge_regularization_(ridge_regularization) {}
+
   bool Compute(const Eigen::SparseMatrix<double>& A) override {
-    linear_solver_.compute(A.transpose() * A);
-    return linear_solver_.info() == Eigen::Success;
+    return solver_.Compute(NormalEquations(A, ridge_regularization_));
   }
 
   bool Solve(const Eigen::VectorXd& b, Eigen::VectorXd* x) override {
-    x->noalias() = linear_solver_.solve(b);
-    return linear_solver_.info() == Eigen::Success;
+    return solver_.Solve(b, x);
   }
 
  private:
-  Eigen::CholmodSupernodalLLT<Eigen::SparseMatrix<double>> linear_solver_;
+  SparseCholeskyWithFallbackSolver solver_;
+  const double ridge_regularization_;
 };
 
 std::shared_ptr<LeastAbsoluteDeviationLinearSolverImpl> CreateLinearSolver(
-    const LeastAbsoluteDeviationSolver::Options::SolverType& solver_type,
+    const LeastAbsoluteDeviationSolver::Options& options,
     const Eigen::SparseMatrix<double>& A) {
-  switch (solver_type) {
+  switch (options.solver_type) {
     case LeastAbsoluteDeviationSolver::Options::SolverType::SimplicialLLT:
-      return std::make_shared<SimplicialLLTLinearSolver>();
+      return std::make_shared<SimplicialLLTLinearSolver>(
+          options.ridge_regularization);
       break;
     case LeastAbsoluteDeviationSolver::Options::SolverType::
         SupernodalCholmodLLT:
-      return std::make_shared<SupernodalCholmodLLTLinearSolver>();
+      return std::make_shared<SupernodalCholmodLLTLinearSolver>(
+          options.ridge_regularization);
       break;
     default:
       throw std::runtime_error("Unknown linear solver type");
@@ -107,22 +101,31 @@ LeastAbsoluteDeviationSolver::LeastAbsoluteDeviationSolver(
     const Options& options, const Eigen::SparseMatrix<double>& A)
     : options_(options),
       A_(A),
-      linear_solver_(CreateLinearSolver(options_.solver_type, A)) {
+      linear_solver_(CreateLinearSolver(options_, A)) {
+  THROW_CHECK_GE(options_.ridge_regularization, 0);
   THROW_CHECK_GT(options_.rho, 0);
   THROW_CHECK_GT(options_.alpha, 0);
   THROW_CHECK_GT(options_.max_num_iterations, 0);
   THROW_CHECK_GE(options_.absolute_tolerance, 0);
   THROW_CHECK_GE(options_.relative_tolerance, 0);
   if (A.rows() < A.cols()) {
-    throw std::runtime_error("Undertermined systems not supported.");
+    throw std::runtime_error("Underdetermined systems not supported.");
   }
 
-  linear_solver_->Compute(A_);
+  valid_ = linear_solver_->Compute(A_);
+  if (!valid_) {
+    LOG(WARNING) << "LeastAbsoluteDeviationSolver: factorization of A^T A "
+                    "failed; system is rank deficient or not positive "
+                    "definite. Solve() will return false.";
+  }
 }
 
 bool LeastAbsoluteDeviationSolver::Solve(const Eigen::VectorXd& b,
                                          Eigen::VectorXd* x) const {
   THROW_CHECK_NOTNULL(x);
+  if (!valid_) {
+    return false;
+  }
 
   Eigen::VectorXd z = Eigen::VectorXd::Zero(A_.rows());
   Eigen::VectorXd z_old(A_.rows());

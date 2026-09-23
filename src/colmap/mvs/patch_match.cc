@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/mvs/patch_match.h"
 
@@ -33,11 +6,14 @@
 #include "colmap/mvs/consistency_graph.h"
 #include "colmap/mvs/patch_match_cuda.h"
 #include "colmap/mvs/workspace.h"
+#include "colmap/util/cuda.h"
 #include "colmap/util/file.h"
+#include "colmap/util/hash_containers.h"
 #include "colmap/util/misc.h"
+#include "colmap/util/threading.h"
 
 #include <numeric>
-#include <unordered_set>
+#include <set>
 
 #define PrintOption(option) LOG(INFO) << #option ": " << option << std::endl
 
@@ -50,16 +26,15 @@ PatchMatch::PatchMatch(const PatchMatchOptions& options, const Problem& problem)
 PatchMatch::~PatchMatch() {}
 
 void PatchMatch::Problem::Print() const {
-  PrintHeading2("PatchMatch::Problem");
+  LOG_HEADING2("PatchMatch::Problem");
   LOG(INFO) << "ref_image_idx: " << ref_image_idx;
-  LOG(INFO) << "src_image_idxs: ";
-  if (!src_image_idxs.empty()) {
-    for (size_t i = 0; i < src_image_idxs.size() - 1; ++i) {
-      LOG(INFO) << src_image_idxs[i] << " ";
-    }
-    LOG(INFO) << src_image_idxs.back();
-  } else {
+  THROW_CHECK(!src_image_idxs.empty());
+  std::ostringstream src_image_idxs_stream;
+  for (size_t i = 0; i < src_image_idxs.size() - 1; ++i) {
+    src_image_idxs_stream << src_image_idxs[i] << " ";
   }
+  src_image_idxs_stream << src_image_idxs.back();
+  LOG(INFO) << "src_image_idxs: " << src_image_idxs_stream.str();
 }
 
 void PatchMatch::Check() const {
@@ -124,7 +99,7 @@ void PatchMatch::Check() const {
 }
 
 void PatchMatch::Run() {
-  PrintHeading2("PatchMatch::Run");
+  LOG_HEADING2("PatchMatch::Run");
 
   Check();
 
@@ -151,11 +126,12 @@ ConsistencyGraph PatchMatch::GetConsistencyGraph() const {
                           patch_match_cuda_->GetConsistentImageIdxs());
 }
 
-PatchMatchController::PatchMatchController(const PatchMatchOptions& options,
-                                           const std::string& workspace_path,
-                                           const std::string& workspace_format,
-                                           const std::string& pmvs_option_name,
-                                           const std::string& config_path)
+PatchMatchController::PatchMatchController(
+    const PatchMatchOptions& options,
+    const std::filesystem::path& workspace_path,
+    const std::string& workspace_format,
+    const std::string& pmvs_option_name,
+    const std::filesystem::path& config_path)
     : options_(options),
       workspace_path_(workspace_path),
       workspace_format_(workspace_format),
@@ -172,6 +148,8 @@ void PatchMatchController::Run() {
   ReadGpuIndices();
 
   thread_pool_ = std::make_unique<ThreadPool>(gpu_indices_.size());
+  io_thread_pool_ = std::make_unique<ThreadPool>(
+      GetEffectiveNumThreads(options_.num_threads));
 
   // If geometric consistency is enabled, then photometric output must be
   // computed first for all images without filtering.
@@ -238,11 +216,11 @@ void PatchMatchController::ReadProblems() {
 
   const auto& model = workspace_->GetModel();
 
-  const std::string config_path =
-      config_path_.empty() ? JoinPaths(workspace_path_,
-                                       workspace_->GetOptions().stereo_folder,
-                                       "patch-match.cfg")
-                           : config_path_;
+  const auto config_path = config_path_.empty()
+                               ? workspace_path_ /
+                                     workspace_->GetOptions().stereo_folder /
+                                     "patch-match.cfg"
+                               : config_path_;
   std::vector<std::string> config = ReadTextFileLines(config_path);
 
   std::vector<std::map<int, int>> shared_num_points;
@@ -252,7 +230,7 @@ void PatchMatchController::ReadProblems() {
       DegToRad(options_.min_triangulation_angle);
 
   std::string ref_image_name;
-  std::unordered_set<int> ref_image_idxs;
+  FlatHashSet<int> ref_image_idxs;
 
   struct ProblemConfig {
     std::string ref_image_name;
@@ -395,12 +373,12 @@ void PatchMatchController::ProcessProblem(const PatchMatchOptions& options,
   const std::string image_name = model.GetImageName(problem.ref_image_idx);
   const std::string file_name =
       StringPrintf("%s.%s.bin", image_name.c_str(), output_type.c_str());
-  const std::string depth_map_path =
-      JoinPaths(workspace_path_, stereo_folder, "depth_maps", file_name);
-  const std::string normal_map_path =
-      JoinPaths(workspace_path_, stereo_folder, "normal_maps", file_name);
-  const std::string consistency_graph_path = JoinPaths(
-      workspace_path_, stereo_folder, "consistency_graphs", file_name);
+  const auto depth_map_path =
+      workspace_path_ / stereo_folder / "depth_maps" / file_name;
+  const auto normal_map_path =
+      workspace_path_ / stereo_folder / "normal_maps" / file_name;
+  const auto consistency_graph_path =
+      workspace_path_ / stereo_folder / "consistency_graphs" / file_name;
 
   if (ExistsFile(depth_map_path) && ExistsFile(normal_map_path) &&
       (!options.write_consistency_graph ||
@@ -408,10 +386,10 @@ void PatchMatchController::ProcessProblem(const PatchMatchOptions& options,
     return;
   }
 
-  PrintHeading1(StringPrintf("Processing view %d / %d for %s",
-                             problem_idx + 1,
-                             problems_.size(),
-                             image_name.c_str()));
+  LOG_HEADING1(StringPrintf("Processing view %d / %d for %s",
+                            problem_idx + 1,
+                            problems_.size(),
+                            image_name.c_str()));
 
   auto patch_match_options = options;
 
@@ -446,8 +424,8 @@ void PatchMatchController::ProcessProblem(const PatchMatchOptions& options,
 
   {
     // Collect all used images in current problem.
-    std::unordered_set<int> used_image_idxs(problem.src_image_idxs.begin(),
-                                            problem.src_image_idxs.end());
+    FlatHashSet<int> used_image_idxs(problem.src_image_idxs.begin(),
+                                     problem.src_image_idxs.end());
     used_image_idxs.insert(problem.ref_image_idx);
 
     patch_match_options.filter_min_num_consistent =
@@ -459,11 +437,14 @@ void PatchMatchController::ProcessProblem(const PatchMatchOptions& options,
     std::unique_lock<std::mutex> lock(workspace_mutex_);
 
     LOG(INFO) << "Reading inputs...";
+
+    // Filter by file existence first (fast, no heavy I/O).
     std::vector<int> src_image_idxs;
+    std::vector<int> valid_image_idxs;
     for (const auto image_idx : used_image_idxs) {
-      std::string image_path = workspace_->GetBitmapPath(image_idx);
-      std::string depth_path = workspace_->GetDepthMapPath(image_idx);
-      std::string normal_path = workspace_->GetNormalMapPath(image_idx);
+      const auto image_path = workspace_->GetBitmapPath(image_idx);
+      const auto depth_path = workspace_->GetDepthMapPath(image_idx);
+      const auto normal_path = workspace_->GetNormalMapPath(image_idx);
 
       if (!ExistsFile(image_path) ||
           (options.geom_consistency && !ExistsFile(depth_path)) ||
@@ -483,15 +464,28 @@ void PatchMatchController::ProcessProblem(const PatchMatchOptions& options,
         }
       }
 
+      valid_image_idxs.push_back(image_idx);
       if (image_idx != problem.ref_image_idx) {
         src_image_idxs.push_back(image_idx);
       }
-      images.at(image_idx).SetBitmap(workspace_->GetBitmap(image_idx));
-      if (options.geom_consistency) {
-        depth_maps.at(image_idx) = workspace_->GetDepthMap(image_idx);
-        normal_maps.at(image_idx) = workspace_->GetNormalMap(image_idx);
-      }
     }
+
+    // Read images in parallel using the shared I/O thread pool.
+    std::vector<std::shared_future<void>> futures;
+    futures.reserve(valid_image_idxs.size());
+    for (const auto image_idx : valid_image_idxs) {
+      futures.push_back(io_thread_pool_->AddTask([&, image_idx]() {
+        images.at(image_idx).SetBitmap(workspace_->GetBitmap(image_idx));
+        if (options.geom_consistency) {
+          depth_maps.at(image_idx) = workspace_->GetDepthMap(image_idx);
+          normal_maps.at(image_idx) = workspace_->GetNormalMap(image_idx);
+        }
+      }));
+    }
+    for (auto& future : futures) {
+      future.get();
+    }
+
     problem.src_image_idxs = src_image_idxs;
   }
 

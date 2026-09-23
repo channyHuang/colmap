@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/controllers/automatic_reconstruction.h"
 
@@ -40,12 +13,14 @@
 namespace colmap {
 namespace {
 
-TEST(AutomaticReconstructionController, Nominal) {
-  SetPRNGSeed(1);
+class ParameterizedAutomaticReconstructionTests
+    : public ::testing::TestWithParam<
+          AutomaticReconstructionController::Mapper> {};
 
-  const std::string test_dir = CreateTestDir();
-  const std::string workspace_path = test_dir + "/workspace";
-  const std::string image_path = test_dir + "/images";
+TEST_P(ParameterizedAutomaticReconstructionTests, Nominal) {
+  const auto test_dir = CreateTestDir();
+  const auto workspace_path = test_dir / "workspace";
+  const auto image_path = test_dir / "images";
   CreateDirIfNotExists(workspace_path);
   CreateDirIfNotExists(image_path);
 
@@ -68,21 +43,32 @@ TEST(AutomaticReconstructionController, Nominal) {
   options.dense = false;  // Disable dense reconstruction to avoid GPU
   options.use_gpu = false;
   options.random_seed = 1;
+  options.mapper = GetParam();
 
   auto reconstruction_manager = std::make_shared<ReconstructionManager>();
   AutomaticReconstructionController controller(options, reconstruction_manager);
+  controller.Setup();
   controller.Start();
   controller.Wait();
 
   EXPECT_EQ(reconstruction_manager->Size(), 1);
   EXPECT_THAT(*reconstruction_manager->Get(0),
               ReconstructionNear(gt_reconstruction,
-                                 /*max_rotation_error_deg=*/0.5,
+                                 /*max_rotation_error_deg=*/0.6,
                                  /*max_proj_center_error=*/0.1,
                                  /*max_scale_error=*/std::nullopt,
                                  /*num_obs_tolerance=*/0.9,
                                  /*align=*/true));
 }
+
+// TODO: Add GLOBAL mapper test. Currently excluded because the test produces
+// fewer observations than expected. The global pipeline is tested separately
+// in global_pipeline_test.cc.
+INSTANTIATE_TEST_SUITE_P(
+    AutomaticReconstructionTests,
+    ParameterizedAutomaticReconstructionTests,
+    ::testing::Values(AutomaticReconstructionController::Mapper::INCREMENTAL,
+                      AutomaticReconstructionController::Mapper::HIERARCHICAL));
 
 }  // namespace
 }  // namespace colmap

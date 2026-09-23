@@ -18,38 +18,45 @@ jobs:
   build:
     name: ${{ matrix.config.os }} ${{ matrix.config.cmakeBuildType }} ${{ matrix.config.cudaEnabled && 'CUDA' || '' }}
     runs-on: ${{ matrix.config.os }}
+    permissions:
+      contents: read
+      actions: write
     strategy:
       matrix:
         config: [
           {
-            os: windows-2025,
+            os: windows-2025-vs2026,
             cmakeBuildType: Release,
             cudaEnabled: true,
             testsEnabled: true,
             exportPackage: true,
+            ccacheMaxSize: 200M,
           },
           {
-            os: windows-2025,
+            os: windows-2025-vs2026,
             cmakeBuildType: Release,
             cudaEnabled: false,
             testsEnabled: true,
             exportPackage: true,
+            ccacheMaxSize: 300M,
           },
         ]
 
     env:
-      COMPILER_CACHE_VERSION: 1
       COMPILER_CACHE_DIR: ${{ github.workspace }}/compiler-cache
       CCACHE_DIR: ${{ github.workspace }}/compiler-cache/ccache
       CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: ${{ matrix.config.ccacheMaxSize }}
       GLOG_v: 2
       GLOG_logtostderr: 1
-      CUDA_MAJOR_VERSION: 12
-      CUDA_MINOR_VERSION: 9
-      CUDA_PATCH_VERSION: 1
+      CUDA_MAJOR_VERSION: 13
+      CUDA_MINOR_VERSION: 2
+      CUDA_PATCH_VERSION: 0
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # We define the vcpkg binary sources using separate variables for read and
       # write operations:
@@ -74,31 +81,38 @@ jobs:
           }
           echo "VCPKG_BINARY_SOURCES=${VCPKG_BINARY_SOURCES}" >> "${env:GITHUB_ENV}"
 
-      - name: Compiler cache
-        uses: actions/cache@v4
-        id: cache-builds
+      - name: Restore compiler cache
+        uses: ./.github/actions/compiler-cache
+        id: cache-compiler
         with:
-          key: v${{ env.COMPILER_CACHE_VERSION }}-${{ matrix.config.os }}-${{ matrix.config.cmakeBuildType }}-${{ matrix.config.asanEnabled }}--${{ matrix.config.cudaEnabled }}-${{ github.run_id }}-${{ github.run_number }}
-          restore-keys: v${{ env.COMPILER_CACHE_VERSION }}-${{ matrix.config.os }}-${{ matrix.config.cmakeBuildType }}-${{ matrix.config.asanEnabled }}--${{ matrix.config.cudaEnabled }}
+          mode: restore
           path: ${{ env.COMPILER_CACHE_DIR }}
+          key-suffix: ${{ matrix.config.os }}-${{ matrix.config.cmakeBuildType }}-cuda_${{ matrix.config.cudaEnabled }}
 
-      - name: Install ccache
+      - name: Install compile cache
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path "${{ env.CCACHE_DIR }}"
           echo "${{ env.COMPILER_CACHE_DIR }}/bin" | Out-File -Encoding utf8 -Append -FilePath $env:GITHUB_PATH
-          if (Test-Path -PathType Leaf "${{ env.COMPILER_CACHE_DIR }}/bin/ccache.exe") {
-            exit
+          if (!(Test-Path -PathType Leaf "${{ env.COMPILER_CACHE_DIR }}/bin/ccache.exe")) {
+            .github/workflows/install-ccache.ps1 -Destination "${{ env.COMPILER_CACHE_DIR }}/bin"
           }
-          .github/workflows/install-ccache.ps1 -Destination "${{ env.COMPILER_CACHE_DIR }}/bin"
+          & "${{ env.COMPILER_CACHE_DIR }}/bin/ccache.exe" --zero-stats
 
       - name: Install CUDA
-        uses: Jimver/cuda-toolkit@v0.2.29
+        uses: Jimver/cuda-toolkit@v0.2.35
         if: matrix.config.cudaEnabled
         id: cuda-toolkit
         with:
           cuda: '${{ env.CUDA_MAJOR_VERSION }}.${{ env.CUDA_MINOR_VERSION }}.${{ env.CUDA_PATCH_VERSION }}'
-          sub-packages: '["nvcc", "nvtx", "cudart", "curand", "curand_dev", "nvrtc_dev"]'
+          # CUDA 13 reorganized the toolkit, so the compiler now needs four
+          # extra components beyond the old list: crt (crt/host_config.h,
+          # included by cuda_runtime.h), nvvm (the cicc device compiler +
+          # libdevice; no longer bundled in the nvcc subpackage),
+          # nvptxcompiler, and thrust (Thrust/CUB headers, on Windows the
+          # subpackage is "thrust", not "cccl"). We avoid a full install to
+          # skip the large math/Nsight subpackages COLMAP does not use.
+          sub-packages: '["nvcc", "crt", "nvvm", "nvptxcompiler", "thrust", "nvtx", "cudart", "curand", "curand_dev", "nvrtc_dev"]'
           method: 'network'
 
       - name: Setup vcpkg
@@ -113,7 +127,11 @@ jobs:
       - name: Install CMake and Ninja
         uses: lukka/get-cmake@latest
         with:
-          cmakeVersion: "3.31.0"
+          # CMake >= 4.1 knows the CUDA 13 architecture set, so "all-major"
+          # expands to Turing..Blackwell (75..120). Older CMake predates CUDA 13
+          # and would expand it to a stale set including Maxwell/Pascal/Volta
+          # (compute_50/60/70), which CUDA 13 no longer supports.
+          cmakeVersion: "4.3.2"
           ninjaVersion: "1.12.1"
 
       - name: Configure and build
@@ -122,20 +140,30 @@ jobs:
           ./scripts/shell/enter_vs_dev_shell.ps1
           cd ${{ github.workspace }}
           ./vcpkg/vcpkg.exe integrate install
-          mkdir build
+          mkdir -Force build
           cd build
+          if ($${{ matrix.config.cudaEnabled }}) {
+            # The windows-2025 runner ships a newer MSVC toolset (VS 18,
+            # _MSC_VER 19.5x) than older CUDA host_config.h versions whitelist,
+            # which otherwise aborts CUDA compiler detection with "unsupported
+            # Microsoft Visual Studio version". Kept as a safety net in case the
+            # pinned CUDA toolkit still lags the runner's MSVC; it is a no-op
+            # when the host compiler is already supported. CMake reads CUDAFLAGS
+            # during CUDA compiler detection.
+            $env:CUDAFLAGS = "-allow-unsupported-compiler"
+          }
           cmake .. `
             -GNinja `
             -DCMAKE_MAKE_PROGRAM=ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DTESTS_ENABLED=${{ matrix.config.testsEnabled }} `
             -DGUI_ENABLED=ON `
-            -DGLOMAP_ENABLED=ON `
             -DCUDA_ENABLED=${{ matrix.config.cudaEnabled }} `
             -DCMAKE_CUDA_ARCHITECTURES=all-major `
             -DCUDAToolkit_ROOT="${{ steps.cuda-toolkit.outputs.CUDA_PATH }}" `
             -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows-release `
+            -DVCPKG_USE_LEGACY_APPLOCAL=ON `
             -DCMAKE_INSTALL_PREFIX=install
           ninja
 
@@ -144,7 +172,7 @@ jobs:
         run: |
           ./vcpkg/vcpkg.exe integrate install
           cd build
-          $EXCLUDED_TESTS = "(feature/colmap_feature_sift_test)|(util/colmap_util_opengl_utils_test)|(mvs/colmap_mvs_gpu_mat_test)"
+          $EXCLUDED_TESTS = "(feature/sift_test)|(util/opengl_utils_test)|(mvs/gpu_mat_test)"
           ctest -E ${EXCLUDED_TESTS} --output-on-failure
 
       - name: Export package
@@ -165,22 +193,37 @@ jobs:
           ../vcpkg/vcpkg.exe export --raw --output-dir vcpkg_export --output colmap
           cp vcpkg_export/colmap/installed/x64-windows/bin/*.dll install/bin
           cp vcpkg_export/colmap/installed/x64-windows-release/bin/*.dll install/bin
-          cp -r vcpkg_export/colmap/installed/x64-windows/Qt6/plugins install
+          # Deploy the Qt plugins from the x64-windows-release triplet, which is
+          # the triplet COLMAP is actually built against. qtsvg is only installed
+          # for that triplet, so copying from x64-windows would miss the SVG
+          # plugins (imageformats/qsvg.dll and iconengines/qsvgicon.dll) that Qt
+          # needs to render the SVG toolbar/menu icons, leaving them blank.
+          cp -r vcpkg_export/colmap/installed/x64-windows-release/Qt6/plugins install
+
+          # Fail loudly if the SVG plugins are missing: without them Qt cannot
+          # render the SVG icons and the toolbar/menu icons show up blank, but
+          # the build itself succeeds, so the regression is otherwise silent.
+          if (-not (Test-Path install/plugins/iconengines/qsvgicon.dll)) {
+              throw "Missing Qt SVG icon engine plugin (iconengines/qsvgicon.dll); SVG icons would not render."
+          }
+          if (-not (Test-Path install/plugins/imageformats/qsvg.dll)) {
+              throw "Missing Qt SVG image format plugin (imageformats/qsvg.dll); SVG icons would not render."
+          }
           if ($${{ matrix.config.cudaEnabled }}) {
               cp "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}/bin/cudart64_*.dll" install/bin
               cp "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}/bin/curand64_*.dll" install/bin
           }
-          Remove-Item -Recurse -Force install/include,install/lib,install/share
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue install/include,install/lib,install/share
 
       - name: Upload package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: ${{ matrix.config.exportPackage && matrix.config.cudaEnabled }}
         with:
           name: colmap-x64-windows-cuda
           path: build/install
 
       - name: Upload package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: ${{ matrix.config.exportPackage && !matrix.config.cudaEnabled }}
         with:
           name: colmap-x64-windows-nocuda
@@ -189,6 +232,13 @@ jobs:
       - name: Cleanup compiler cache
         shell: pwsh
         run: |
+          ccache --cleanup
           ccache --show-stats --verbose
-          ccache --evict-older-than 1d
-          ccache --show-stats --verbose
+
+      - name: Save compiler cache
+        uses: ./.github/actions/compiler-cache
+        with:
+          mode: save
+          key: ${{ steps.cache-compiler.outputs.key }}
+          path: ${{ env.COMPILER_CACHE_DIR }}
+          cache-hit: ${{ steps.cache-compiler.outputs.cache-hit }}

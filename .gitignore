@@ -1,9 +1,12 @@
 # Custom files
+.python-version
 LocalConfig.cmake
 src/colmap/util/version.cc
 CMakeUserPresets.json
 .clangd
 compile_commands.json
+.claude/settings.local.json
+AGENTS.override.md
 
 # Custom directories
 .idea/
@@ -12,12 +15,15 @@ compile_commands.json
 .DS_Store
 .cache
 build*/
-install-debug/
-install-release/
+install*/
 data/
 benchmark/reconstruction/data/
 benchmark/reconstruction/runs/
 doc/_build
+doc/node_modules/
+doc/playwright-report/
+doc/_static/viewer/
+doc/test-results/
 vcpkg_installed/
 
 # Compiled Object files

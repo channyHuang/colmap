@@ -1,37 +1,9 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #pragma once
 
 #include "colmap/geometry/rigid3.h"
 #include "colmap/util/eigen_alignment.h"
-#include "colmap/util/types.h"
 
 #include <vector>
 
@@ -50,7 +22,8 @@ namespace colmap {
 // `cams2_from_cams1.size() == n.size() == 1` the homography is pure-rotational.
 //
 // @param H                 3x3 homography matrix.
-// @param K                 3x3 calibration matrix.
+// @param K1                3x3 calibration matrix of first camera.
+// @param K2                3x3 calibration matrix of second camera.
 // @param cams2_from_cams1  Possible relative camera transformations.
 // @param normals           Possible normal vectors.
 void DecomposeHomographyMatrix(const Eigen::Matrix3d& H,
@@ -68,10 +41,7 @@ void DecomposeHomographyMatrix(const Eigen::Matrix3d& H,
 // @param K2              3x3 calibration matrix of second camera.
 // @param cam_rays1       First set of corresponding rays.
 // @param cam_rays2       Second set of corresponding rays.
-// @param inlier_mask     Only points with `true` in the inlier mask are
-//                        considered in the cheirality test. Size of the
-//                        inlier mask must match the number of points N.
-// @param cam2_from_cam1  Most probable 3x1 translation vector.
+// @param cam2_from_cam1  Most probable relative camera transformation.
 // @param normal          Most probable 3x1 normal vector.
 // @param points3D        Triangulated 3D points infront of camera
 //                        (only if homography is not pure-rotational).
@@ -100,5 +70,16 @@ Eigen::Matrix3d HomographyMatrixFromPose(const Eigen::Matrix3d& K1,
                                          const Eigen::Vector3d& t,
                                          const Eigen::Vector3d& n,
                                          double d);
+
+// Calculate the squared reprojection error for a single point pair under
+// a homography transformation.
+//
+// @param point1      First point.
+// @param point2      Second point.
+// @param H           3x3 homography matrix.
+// @return            Squared reprojection error.
+double ComputeSquaredHomographyError(const Eigen::Vector2d& point1,
+                                     const Eigen::Vector2d& point2,
+                                     const Eigen::Matrix3d& H);
 
 }  // namespace colmap

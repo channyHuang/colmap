@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include "colmap/mvs/model.h"
 
 #include "pycolmap/helpers.h"
 #include "pycolmap/pybind11_extension.h"
+
+#include <filesystem>
 
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
@@ -23,8 +27,8 @@ void BindMVSModel(py::module& m) {
       .def("read_from_colmap",
            &mvs::Model::ReadFromCOLMAP,
            "path"_a,
-           "sparse_path"_a = "sparse",
-           "images_path"_a = "images",
+           "sparse_path"_a = std::filesystem::path("sparse"),
+           "images_path"_a = std::filesystem::path("images"),
            "Read the model from a COLMAP reconstruction.")
       .def("read_from_pmvs",
            &mvs::Model::ReadFromPMVS,

@@ -1,5 +1,8 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include "colmap/scene/two_view_geometry.h"
 
+#include "colmap/feature/types.h"
 #include "colmap/scene/camera.h"
 
 #include "pycolmap/helpers.h"
@@ -37,13 +40,16 @@ void BindTwoViewGeometryScene(py::module& m) {
       .def_readwrite("F", &TwoViewGeometry::F)
       .def_readwrite("H", &TwoViewGeometry::H)
       .def_readwrite("cam2_from_cam1", &TwoViewGeometry::cam2_from_cam1)
+      .def_readwrite("camera1", &TwoViewGeometry::camera1)
+      .def_readwrite("camera2", &TwoViewGeometry::camera2)
       .def_property(
           "inlier_matches",
           [](const TwoViewGeometry& self) {
-            return FeatureMatchesToMatrix(self.inlier_matches);
+            return MatchesToMatrix(self.inlier_matches);
           },
-          [](TwoViewGeometry& self, const PyFeatureMatches& matrix) {
-            self.inlier_matches = FeatureMatchesFromMatrix(matrix);
+          [](TwoViewGeometry& self,
+             const Eigen::Ref<const FeatureMatchesMatrix>& matrix) {
+            self.inlier_matches = MatchesFromMatrix(matrix);
           })
       .def_readwrite("tri_angle", &TwoViewGeometry::tri_angle)
       .def("invert", &TwoViewGeometry::Invert);

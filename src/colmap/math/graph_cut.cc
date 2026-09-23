@@ -1,38 +1,20 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/math/graph_cut.h"
 
-#include <unordered_map>
+#include "colmap/util/hash_containers.h"
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
 
 #include <boost/graph/stoer_wagner_min_cut.hpp>
 #include <boost/property_map/property_map.hpp>
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 #ifdef _MSC_VER
 #pragma warning(push)
@@ -56,7 +38,7 @@ class MetisGraph {
  public:
   MetisGraph(const std::vector<std::pair<int, int>>& edges,
              const std::vector<int>& weights) {
-    std::unordered_map<int, std::vector<std::pair<int, int>>> adjacency_list;
+    NodeHashMap<int, std::vector<std::pair<int, int>>> adjacency_list;
     for (size_t i = 0; i < edges.size(); ++i) {
       const auto& edge = edges[i];
       const auto weight = weights[i];
@@ -78,10 +60,10 @@ class MetisGraph {
         continue;
       }
 
-      for (const auto& edge : adjacency_list[i]) {
+      for (const auto& [neighbor_idx, weight] : adjacency_list[i]) {
         edge_idx += 1;
-        adjncy_.push_back(edge.first);
-        adjwgt_.push_back(edge.second);
+        adjncy_.push_back(neighbor_idx);
+        adjwgt_.push_back(weight);
       }
     }
 
@@ -122,8 +104,8 @@ class MetisGraph {
   idx_t* adjwgt = nullptr;
 
  private:
-  std::unordered_map<int, int> vertex_id_to_idx_;
-  std::unordered_map<int, int> vertex_idx_to_id_;
+  NodeHashMap<int, int> vertex_id_to_idx_;
+  NodeHashMap<int, int> vertex_idx_to_id_;
   std::vector<idx_t> xadj_;
   std::vector<idx_t> adjncy_;
   std::vector<idx_t> adjwgt_;
@@ -139,20 +121,19 @@ void ComputeMinGraphCutStoerWagner(
   THROW_CHECK_EQ(edges.size(), weights.size());
   THROW_CHECK_GE(edges.size(), 2);
 
-  typedef boost::property<boost::edge_weight_t, int> edge_weight_t;
-  typedef boost::adjacency_list<boost::vecS,
-                                boost::vecS,
-                                boost::undirectedS,
-                                boost::no_property,
-                                edge_weight_t>
-      undirected_graph_t;
+  using edge_weight_t = boost::property<boost::edge_weight_t, int>;
+  using undirected_graph_t = boost::adjacency_list<boost::vecS,
+                                                   boost::vecS,
+                                                   boost::undirectedS,
+                                                   boost::no_property,
+                                                   edge_weight_t>;
 
   int max_vertex_index = 0;
-  for (const auto& edge : edges) {
-    THROW_CHECK_GE(edge.first, 0);
-    THROW_CHECK_GE(edge.second, 0);
-    max_vertex_index = std::max(max_vertex_index, edge.first);
-    max_vertex_index = std::max(max_vertex_index, edge.second);
+  for (const auto& [v1, v2] : edges) {
+    THROW_CHECK_GE(v1, 0);
+    THROW_CHECK_GE(v2, 0);
+    max_vertex_index = std::max(max_vertex_index, v1);
+    max_vertex_index = std::max(max_vertex_index, v2);
   }
 
   const undirected_graph_t graph(edges.begin(),
@@ -175,7 +156,7 @@ void ComputeMinGraphCutStoerWagner(
   }
 }
 
-std::unordered_map<int, int> ComputeNormalizedMinGraphCut(
+NodeHashMap<int, int> ComputeNormalizedMinGraphCut(
     const std::vector<std::pair<int, int>>& edges,
     const std::vector<int>& weights,
     const int num_parts) {
@@ -215,7 +196,7 @@ std::unordered_map<int, int> ComputeNormalizedMinGraphCut(
     LOG(FATAL_THROW) << "INTERNAL: Metis 'some other type of error'";
   }
 
-  std::unordered_map<int, int> labels;
+  NodeHashMap<int, int> labels;
   for (size_t idx = 0; idx < cut_labels.size(); ++idx) {
     labels.emplace(graph.GetVertexId(idx), cut_labels[idx]);
   }

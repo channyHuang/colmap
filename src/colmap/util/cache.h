@@ -1,34 +1,8 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #pragma once
 
+#include "colmap/util/hash_containers.h"
 #include "colmap/util/logging.h"
 
 #include <functional>
@@ -36,7 +10,6 @@
 #include <list>
 #include <memory>
 #include <shared_mutex>
-#include <unordered_map>
 
 namespace colmap {
 
@@ -70,8 +43,8 @@ class LRUCache {
   void Clear();
 
  private:
-  typedef typename std::pair<key_t, std::shared_ptr<value_t>> key_value_pair_t;
-  typedef typename std::list<key_value_pair_t>::iterator list_iterator_t;
+  using key_value_pair_t = typename std::pair<key_t, std::shared_ptr<value_t>>;
+  using list_iterator_t = typename std::list<key_value_pair_t>::iterator;
 
   // Maximum number of least-recently-used elements the cache remembers.
   const size_t max_num_elems_;
@@ -80,7 +53,7 @@ class LRUCache {
   std::list<key_value_pair_t> elems_list_;
 
   // Mapping from key to location in the list.
-  std::unordered_map<key_t, list_iterator_t> elems_map_;
+  NodeHashMap<key_t, list_iterator_t> elems_map_;
 
   // Function to compute new values if not in the cache.
   const LoadFn load_fn_;
@@ -166,8 +139,8 @@ class MemoryConstrainedLRUCache {
   void Clear();
 
  private:
-  typedef typename std::pair<key_t, std::shared_ptr<value_t>> key_value_pair_t;
-  typedef typename std::list<key_value_pair_t>::iterator list_iterator_t;
+  using key_value_pair_t = typename std::pair<key_t, std::shared_ptr<value_t>>;
+  using list_iterator_t = typename std::list<key_value_pair_t>::iterator;
 
   const size_t max_num_bytes_;
   size_t num_bytes_;
@@ -176,7 +149,7 @@ class MemoryConstrainedLRUCache {
   std::list<key_value_pair_t> elems_list_;
 
   // Mapping from key to (location in list, num_bytes).
-  std::unordered_map<key_t, std::pair<list_iterator_t, size_t>> elems_map_;
+  NodeHashMap<key_t, std::pair<list_iterator_t, size_t>> elems_map_;
 
   // Function to compute new values if not in the cache.
   const LoadFn load_fn_;
@@ -212,17 +185,15 @@ template <typename key_t, typename value_t>
 std::shared_ptr<value_t> LRUCache<key_t, value_t>::Get(const key_t& key) {
   const auto it = elems_map_.find(key);
   if (it == elems_map_.end()) {
-    auto it = elems_map_.find(key);
-    elems_list_.emplace_front(key, load_fn_(key));
-    if (it != elems_map_.end()) {
-      elems_list_.erase(it->second);
-      elems_map_.erase(it);
-    }
-    it = elems_map_.emplace_hint(it, key, elems_list_.begin());
+    // Call load_fn_ before modifying the cache data structures so that if it
+    // throws, the cache remains in a consistent state.
+    auto value = load_fn_(key);
+    elems_list_.emplace_front(key, std::move(value));
+    elems_map_.emplace(key, elems_list_.begin());
     if (elems_map_.size() > max_num_elems_) {
       Pop();
     }
-    return it->second->second;
+    return elems_list_.front().second;
   } else {
     elems_list_.splice(elems_list_.begin(), elems_list_, it->second);
     return it->second->second;
@@ -411,8 +382,9 @@ void MemoryConstrainedLRUCache<key_t, value_t>::Pop() {
     auto last = elems_list_.end();
     --last;
     const auto it = elems_map_.find(last->first);
+    THROW_CHECK_GE(num_bytes_, it->second.second)
+        << "Unsigned underflow in MemoryConstrainedLRUCache::Pop";
     num_bytes_ -= it->second.second;
-    THROW_CHECK_GE(num_bytes_, 0);
     elems_map_.erase(it);
     elems_list_.pop_back();
   }
@@ -422,8 +394,9 @@ template <typename key_t, typename value_t>
 void MemoryConstrainedLRUCache<key_t, value_t>::UpdateNumBytes(
     const key_t& key) {
   size_t& num_bytes = elems_map_.at(key).second;
+  THROW_CHECK_GE(num_bytes_, num_bytes)
+      << "Unsigned underflow in MemoryConstrainedLRUCache::UpdateNumBytes";
   num_bytes_ -= num_bytes;
-  THROW_CHECK_GE(num_bytes_, 0);
   num_bytes = Get(key)->NumBytes();
   num_bytes_ += num_bytes;
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include "colmap/scene/camera.h"
 
 #include "colmap/scene/point2d.h"
@@ -36,18 +38,28 @@ void BindCamera(py::module& m) {
 
   py::classh<Camera> PyCamera(m, "Camera");
   PyCamera.def(py::init<>())
-      .def_static("create",
+      .def_static("create_from_model_id",
                   &Camera::CreateFromModelId,
                   "camera_id"_a,
                   "model"_a,
                   "focal_length"_a,
                   "width"_a,
                   "height"_a)
+      .def_static("create_from_model_name",
+                  &Camera::CreateFromModelName,
+                  "camera_id"_a,
+                  "model_name"_a,
+                  "focal_length"_a,
+                  "width"_a,
+                  "height"_a,
+                  "Create camera from model name string.")
       .def_readwrite(
           "camera_id", &Camera::camera_id, "Unique identifier of the camera.")
       .def_property_readonly(
           "sensor_id", &Camera::SensorId, "Unique identifier of the sensor.")
       .def_readwrite("model", &Camera::model_id, "Camera model.")
+      .def_property_readonly(
+          "model_name", &Camera::ModelName, "Camera model name as string.")
       .def_readwrite("width", &Camera::width, "Width of camera sensor.")
       .def_readwrite("height", &Camera::height, "Height of camera sensor.")
       .def("mean_focal_length", &Camera::MeanFocalLength)
@@ -73,6 +85,10 @@ void BindCamera(py::module& m) {
       .def("extra_params_idxs",
            &Camera::ExtraParamsIdxs,
            "Indices of extra parameters in params property.")
+      .def("metadata_params_idxs",
+           &Camera::MetaDataParamsIdxs,
+           "Indices of metadata parameters in params property (only "
+           "spherical models have these; empty for perspective models).")
       .def("calibration_matrix",
            &Camera::CalibrationMatrix,
            "Compute calibration matrix from params.")
@@ -109,6 +125,25 @@ void BindCamera(py::module& m) {
            "max_focal_length_ratio"_a,
            "max_extra_param"_a,
            "Check whether camera has bogus parameters.")
+      .def("is_undistorted",
+           &Camera::IsUndistorted,
+           "Check whether camera is already undistorted.")
+      .def("is_perspective",
+           &Camera::IsPerspective,
+           "Whether the camera model is perspective, i.e. has a focal length "
+           "and a finite pinhole image plane (so positive-depth cheirality "
+           "applies). Omnidirectional models such as EQUIRECTANGULAR are not "
+           "perspective.")
+      .def("is_spherical",
+           &Camera::IsSpherical,
+           "Whether the camera model is spherical (equirectangular "
+           "omnidirectional panorama).")
+      .def("is_perspective_fisheye",
+           &Camera::IsPerspectiveFisheye,
+           "Whether the camera model is perspective and fisheye.")
+      .def("is_perspective_pinhole",
+           &Camera::IsPerspectivePinhole,
+           "Whether the camera model is perspective and not fisheye.")
       .def("cam_from_img",
            &Camera::CamFromImg,
            "image_point"_a,
@@ -118,7 +153,7 @@ void BindCamera(py::module& m) {
           [](const Camera& self,
              const py::EigenDRef<const Eigen::MatrixX2d>& image_points) {
             std::vector<Eigen::Vector2d> cam_points(image_points.rows());
-            for (size_t i = 0; i < image_points.rows(); ++i) {
+            for (Eigen::Index i = 0; i < image_points.rows(); ++i) {
               const std::optional<Eigen::Vector2d> cam_point =
                   self.CamFromImg(image_points.row(i));
               if (cam_point) {
@@ -150,6 +185,51 @@ void BindCamera(py::module& m) {
           },
           "image_points"_a,
           "Unproject list of points in image plane to camera frame.")
+      .def("cam_ray_from_img",
+           &Camera::CamRayFromImg,
+           "image_point"_a,
+           "Unproject point in image plane to a unit bearing vector in the "
+           "camera frame. Unlike cam_from_img, this supports back-facing rays "
+           "of omnidirectional cameras.")
+      .def(
+          "cam_ray_from_img",
+          [](const Camera& self,
+             const py::EigenDRef<const Eigen::MatrixX2d>& image_points) {
+            std::vector<Eigen::Vector3d> cam_rays(image_points.rows());
+            for (Eigen::Index i = 0; i < image_points.rows(); ++i) {
+              const std::optional<Eigen::Vector3d> cam_ray =
+                  self.CamRayFromImg(image_points.row(i));
+              if (cam_ray) {
+                cam_rays[i] = *cam_ray;
+              } else {
+                cam_rays[i].setConstant(
+                    std::numeric_limits<double>::quiet_NaN());
+              }
+            }
+            return cam_rays;
+          },
+          "image_points"_a,
+          "Unproject list of points in image plane to unit bearing vectors in "
+          "the camera frame.")
+      .def(
+          "cam_ray_from_img",
+          [](const Camera& self, const Point2DVector& image_points) {
+            std::vector<Eigen::Vector3d> cam_rays(image_points.size());
+            for (size_t i = 0; i < image_points.size(); ++i) {
+              const std::optional<Eigen::Vector3d> cam_ray =
+                  self.CamRayFromImg(image_points[i].xy);
+              if (cam_ray) {
+                cam_rays[i] = *cam_ray;
+              } else {
+                cam_rays[i].setConstant(
+                    std::numeric_limits<double>::quiet_NaN());
+              }
+            }
+            return cam_rays;
+          },
+          "image_points"_a,
+          "Unproject list of points in image plane to unit bearing vectors in "
+          "the camera frame.")
       .def("cam_from_img_threshold",
            &Camera::CamFromImgThreshold,
            "threshold"_a,
@@ -157,28 +237,19 @@ void BindCamera(py::module& m) {
       .def("img_from_cam",
            &Camera::ImgFromCam,
            "cam_point"_a,
-           "Project point from camera frame to image plane.")
-      .def(
-          "img_from_cam",
-          [](const Camera& self, const Eigen::Vector2d& cam_point) {
-            PyErr_WarnEx(
-                PyExc_DeprecationWarning,
-                "img_from_cam() with normalized 2D points as input is "
-                "deprecated. Instead, pass 3D points in the camera frame.",
-                1);
-            return self.ImgFromCam(cam_point.homogeneous());
-          },
-          "cam_point"_a,
-          "(Deprecated) Project point from camera frame to image plane.")
+           "check_cheirality"_a = true,
+           "Project point from camera frame to image plane. Without cheirality "
+           "check, points behind the camera are projected as well.")
       .def(
           "img_from_cam",
           [](const Camera& self,
-             const py::EigenDRef<const Eigen::MatrixX3d>& cam_points) {
+             const py::EigenDRef<const Eigen::MatrixX3d>& cam_points,
+             const bool check_cheirality) {
             const size_t num_points = cam_points.rows();
             std::vector<Eigen::Vector2d> image_points(num_points);
             for (size_t i = 0; i < num_points; ++i) {
               const std::optional<Eigen::Vector2d> image_point =
-                  self.ImgFromCam(cam_points.row(i));
+                  self.ImgFromCam(cam_points.row(i), check_cheirality);
               if (image_point) {
                 image_points[i] = *image_point;
               } else {
@@ -189,46 +260,9 @@ void BindCamera(py::module& m) {
             return image_points;
           },
           "cam_points"_a,
-          "Project list of points from camera frame to image plane.")
-      .def(
-          "img_from_cam",
-          [](const Camera& self,
-             const py::EigenDRef<const Eigen::MatrixX2d>& cam_points) {
-            PyErr_WarnEx(
-                PyExc_DeprecationWarning,
-                "img_from_cam() with normalized 2D points as input is "
-                "deprecated. Instead, pass 3D points in the camera frame.",
-                1);
-            return py::cast(self).attr("img_from_cam")(
-                cam_points.rowwise().homogeneous());
-          },
-          "cam_points"_a,
-          "(Deprecated) Project list of points from camera frame to image "
-          "plane.")
-      .def(
-          "img_from_cam",
-          [](const Camera& self, const Point2DVector& cam_points) {
-            PyErr_WarnEx(
-                PyExc_DeprecationWarning,
-                "img_from_cam() with normalized 2D points as input is "
-                "deprecated. Instead, pass 3D points in the camera frame.",
-                1);
-            const size_t num_points = cam_points.size();
-            std::vector<Eigen::Vector2d> image_points(num_points);
-            for (size_t i = 0; i < num_points; ++i) {
-              const std::optional<Eigen::Vector2d> image_point =
-                  self.ImgFromCam(cam_points[i].xy.homogeneous());
-              if (image_point) {
-                image_points[i] = *image_point;
-              } else {
-                image_points[i].setConstant(
-                    std::numeric_limits<double>::quiet_NaN());
-              }
-            }
-            return image_points;
-          },
-          "cam_points"_a,
-          "Project list of points from camera frame to image plane.")
+          "check_cheirality"_a = true,
+          "Project list of points from camera frame to image plane. Without "
+          "cheirality check, points behind the camera are projected as well.")
       .def("rescale",
            py::overload_cast<size_t, size_t>(&Camera::Rescale),
            "new_width"_a,

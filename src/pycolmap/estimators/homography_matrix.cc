@@ -1,7 +1,10 @@
-#include "colmap/estimators/homography_matrix.h"
+// SPDX-License-Identifier: BSD-3-Clause
+
+#include "colmap/estimators/solvers/homography_matrix.h"
 
 #include "colmap/math/random.h"
 #include "colmap/optim/loransac.h"
+#include "colmap/optim/support_measurement.h"
 #include "colmap/util/logging.h"
 
 #include "pycolmap/helpers.h"
@@ -22,8 +25,10 @@ py::typing::Optional<py::dict> PyEstimateHomographyMatrix(
     const RANSACOptions& options) {
   py::gil_scoped_release release;
   THROW_CHECK_EQ(points2D1.size(), points2D2.size());
-  LORANSAC<HomographyMatrixEstimator, HomographyMatrixEstimator> ransac(
-      options);
+  LORANSAC<HomographyMatrixEstimator,
+           HomographyMatrixEstimator,
+           MEstimatorSupportMeasurer>
+      ransac(options);
   const auto report = ransac.Estimate(points2D1, points2D2);
   py::gil_scoped_acquire acquire;
   if (!report.success) {
@@ -43,6 +48,4 @@ void BindHomographyMatrixEstimator(py::module& m) {
         "points2D2"_a,
         py::arg_v("estimation_options", est_options, "RANSACOptions()"),
         "Robustly estimate homography matrix using LO-RANSAC.");
-  DefDeprecation(
-      m, "homography_matrix_estimation", "estimate_homography_matrix");
 }

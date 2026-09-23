@@ -1,33 +1,8 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/math/union_find.h"
+
+#include "colmap/util/hash_containers.h"
 
 #include <gtest/gtest.h>
 
@@ -156,6 +131,18 @@ TEST(UnionFind, PathCompression) {
   EXPECT_EQ(uf.Find(5), root);
 }
 
+TEST(UnionFind, Compress) {
+  UnionFind<int> uf;
+  uf.Union(1, 2);
+  uf.Union(2, 3);
+
+  uf.Compress();
+
+  for (const auto& [elem, parent] : uf.Parents()) {
+    EXPECT_EQ(parent, uf.Find(parent));
+  }
+}
+
 TEST(UnionFind, LargeNumberOfElements) {
   constexpr int kNumElements = 1000;
   UnionFind<int> uf;
@@ -243,6 +230,57 @@ TEST(UnionFind, ReverseUnion) {
   for (int i = 1; i <= 5; ++i) {
     EXPECT_EQ(uf.Find(i), root);
   }
+}
+
+TEST(UnionFind, FindIfExists) {
+  UnionFind<int> uf;
+  auto missing = uf.FindIfExists(42);
+  EXPECT_FALSE(missing.has_value());
+
+  EXPECT_EQ(uf.Find(42), 42);
+  auto root = uf.FindIfExists(42);
+  EXPECT_TRUE(root.has_value());
+  EXPECT_EQ(*root, 42);
+
+  EXPECT_FALSE(uf.FindIfExists(1).has_value());
+  EXPECT_FALSE(uf.FindIfExists(2).has_value());
+  uf.Union(2, 1);
+  EXPECT_TRUE(uf.FindIfExists(1).has_value());
+  EXPECT_TRUE(uf.FindIfExists(2).has_value());
+}
+
+TEST(UnionFind, Parents) {
+  UnionFind<int> uf;
+  EXPECT_TRUE(uf.Parents().empty());
+
+  uf.Find(1);
+  EXPECT_EQ(uf.Parents().size(), 1);
+  EXPECT_TRUE(uf.Parents().count(1));
+
+  uf.Union(2, 3);
+  EXPECT_EQ(uf.Parents().size(), 3);
+  EXPECT_TRUE(uf.Parents().count(2));
+  EXPECT_TRUE(uf.Parents().count(3));
+
+  uf.Union(1, 2);
+  EXPECT_EQ(uf.Parents().size(), 3);
+}
+
+TEST(UnionFind, ParentsGroupByRoot) {
+  UnionFind<int> uf;
+  uf.Union(1, 2);
+  uf.Union(2, 3);
+  uf.Union(10, 20);
+
+  uf.Compress();
+  NodeHashMap<int, std::vector<int>> groups;
+  for (const auto& [elem, parent] : uf.Parents()) {
+    groups[parent].push_back(elem);
+  }
+
+  EXPECT_EQ(groups.size(), 2);
+  EXPECT_EQ(groups[uf.Find(1)].size(), 3);
+  EXPECT_EQ(groups[uf.Find(10)].size(), 2);
 }
 
 }  // namespace

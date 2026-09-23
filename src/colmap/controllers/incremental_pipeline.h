@@ -1,41 +1,15 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #pragma once
 
 #include "colmap/scene/reconstruction_manager.h"
 #include "colmap/sfm/incremental_mapper.h"
 #include "colmap/util/base_controller.h"
+#include "colmap/util/hash_containers.h"
 
+#include <filesystem>
 #include <memory>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 namespace colmap {
@@ -63,7 +37,8 @@ struct IncrementalPipelineOptions {
 
   // The minimum number of registered images of a sub-model, otherwise the
   // sub-model is discarded. Note that the first sub-model is always kept
-  // independent of size.
+  // independent of size. If the model contains at least half of the total
+  // number of images, we also always keep it.
   int min_model_size = 10;
 
   // The image identifiers used to initialize the reconstruction. Note that
@@ -112,8 +87,9 @@ struct IncrementalPipelineOptions {
   // Ceres solver function tolerance for local bundle adjustment
   double ba_local_function_tolerance = 0.0;
 
-  // The maximum number of local bundle adjustment iterations.
-  int ba_local_max_num_iterations = 25;
+  // The maximum number of local bundle adjustment iterations. If -1, the
+  // default of the configured bundle adjustment backend is used.
+  int ba_local_max_num_iterations = -1;
 
   // The growth rates after which to perform global bundle adjustment.
   double ba_global_frames_ratio = 1.1;
@@ -124,8 +100,9 @@ struct IncrementalPipelineOptions {
   // Ceres solver function tolerance for global bundle adjustment
   double ba_global_function_tolerance = 0.0;
 
-  // The maximum number of global bundle adjustment iterations.
-  int ba_global_max_num_iterations = 50;
+  // The maximum number of global bundle adjustment iterations. If -1, the
+  // default of the configured bundle adjustment backend is used.
+  int ba_global_max_num_iterations = -1;
 
   // The thresholds for iterative bundle adjustment refinements.
   int ba_local_max_refinements = 2;
@@ -135,7 +112,14 @@ struct IncrementalPipelineOptions {
 
   // Whether to use Ceres' CUDA sparse linear algebra library, if available.
   bool ba_use_gpu = false;
+  // GPU device index for bundle adjustment (-1 = auto-select).
   std::string ba_gpu_index = "-1";
+
+  // Bundle adjustment solver backend for local bundle adjustment.
+  BundleAdjustmentBackend ba_local_backend = BundleAdjustmentBackend::CERES;
+
+  // Bundle adjustment solver backend for global bundle adjustment.
+  BundleAdjustmentBackend ba_global_backend = BundleAdjustmentBackend::CERES;
 
   // Whether to use priors on the camera positions.
   bool use_prior_position = false;
@@ -150,23 +134,33 @@ struct IncrementalPipelineOptions {
   // Path to a folder with reconstruction snapshots during incremental
   // reconstruction. Snapshots will be saved according to the specified
   // frequency of registered images.
-  std::string snapshot_path = "";
+  std::filesystem::path snapshot_path;
   int snapshot_frames_freq = 0;
+
+  // The image path at which to find the images to extract point colors.
+  // If not specified, all point colors will be black.
+  std::filesystem::path image_path;
 
   // Optional list of image names to reconstruct. If no images are specified,
   // all images will be reconstructed by default.
   std::vector<std::string> image_names;
+
+  // Whether to load all images from the database, including those without
+  // correspondences. Only useful for triangulation where all images are
+  // already registered and should retain their keypoints. Should not be
+  // enabled for incremental SfM.
+  bool load_all_images = false;
 
   // If reconstruction is provided as input, fix the existing frame poses.
   bool fix_existing_frames = false;
 
   // List of rigs for which to fix the sensor_from_rig transformation,
   // independent of ba_refine_sensor_from_rig.
-  std::unordered_set<rig_t> constant_rigs;
+  FlatHashSet<rig_t> constant_rigs;
 
   // List of cameras for which to fix the camera parameters independent
   // of refine_focal_length, refine_principal_point, and refine_extra_params.
-  std::unordered_set<camera_t> constant_cameras;
+  FlatHashSet<camera_t> constant_cameras;
 
   // Maximum runtime in seconds for the reconstruction process.
   // If set to a non-positive value, the process will run until completion.
@@ -179,6 +173,12 @@ struct IncrementalPipelineOptions {
   IncrementalTriangulator::Options Triangulation() const;
   BundleAdjustmentOptions LocalBundleAdjustment() const;
   BundleAdjustmentOptions GlobalBundleAdjustment() const;
+
+  // Returns the effective maximum number of local/global bundle adjustment
+  // iterations. If the respective option is set to -1, the default of the
+  // configured bundle adjustment backend is returned.
+  int EffBaLocalMaxNumIterations() const;
+  int EffBaGlobalMaxNumIterations() const;
 
   inline bool IsInitialPairProvided() const {
     return init_image_id1 != -1 && init_image_id2 != -1;
@@ -197,22 +197,30 @@ class IncrementalPipeline : public BaseController {
     LAST_IMAGE_REG_CALLBACK,
   };
 
-  enum class Status { NO_INITIAL_PAIR, BAD_INITIAL_PAIR, SUCCESS, INTERRUPTED };
+  enum class Status {
+    SUCCESS,
+    INTERRUPTED,
+    CONTINUE,
+    STOP,
+    NO_INITIAL_PAIR,
+    BAD_INITIAL_PAIR,
+    UNKNOWN_SENSOR_FROM_RIG,
+  };
 
   IncrementalPipeline(
-      std::shared_ptr<const IncrementalPipelineOptions> options,
-      const std::string& image_path,
-      const std::string& database_path,
+      std::shared_ptr<IncrementalPipelineOptions> options,
+      std::shared_ptr<class Database> database,
       std::shared_ptr<class ReconstructionManager> reconstruction_manager);
 
-  void Run();
+  IncrementalPipeline(
+      std::shared_ptr<IncrementalPipelineOptions> options,
+      std::shared_ptr<class DatabaseCache> database_cache,
+      std::shared_ptr<class ReconstructionManager> reconstruction_manager);
 
-  bool LoadDatabase();
+  void Run() override;
 
-  // getter functions for python pipelines
-  const std::string& ImagePath() const { return image_path_; }
-  const std::string& DatabasePath() const { return database_path_; }
-  const std::shared_ptr<const IncrementalPipelineOptions>& Options() const {
+  // Getter functions for python pipelines.
+  std::shared_ptr<const IncrementalPipelineOptions> Options() const {
     return options_;
   }
   const std::shared_ptr<class ReconstructionManager>& ReconstructionManager()
@@ -223,9 +231,9 @@ class IncrementalPipeline : public BaseController {
     return database_cache_;
   }
 
-  void Reconstruct(IncrementalMapper& mapper,
-                   const IncrementalMapper::Options& mapper_options,
-                   bool continue_reconstruction);
+  Status Reconstruct(IncrementalMapper& mapper,
+                     const IncrementalMapper::Options& mapper_options,
+                     bool continue_reconstruction);
 
   Status ReconstructSubModel(
       IncrementalMapper& mapper,
@@ -244,12 +252,12 @@ class IncrementalPipeline : public BaseController {
                                 size_t ba_prev_num_reg_images,
                                 size_t ba_prev_num_points);
 
- private:
-  bool ReachedMaxRuntime() const;
+  bool CheckReachedMaxRuntime() const;
 
-  const std::shared_ptr<const IncrementalPipelineOptions> options_;
-  const std::string image_path_;
-  const std::string database_path_;
+ private:
+  void RegisterCallbacks();
+
+  const std::shared_ptr<IncrementalPipelineOptions> options_;
   std::shared_ptr<class ReconstructionManager> reconstruction_manager_;
   std::shared_ptr<class DatabaseCache> database_cache_;
   std::shared_ptr<Timer> total_run_timer_;

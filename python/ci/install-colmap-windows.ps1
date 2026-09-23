@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: BSD-3-Clause
+
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+$PSNativeCommandUseErrorActionPreference = $true
+
 $CURRDIR = $PWD
 
 $COMPILER_TOOLS_DIR = "${env:COMPILER_CACHE_DIR}/bin"
@@ -7,6 +13,7 @@ $env:Path = "${COMPILER_TOOLS_DIR};" + $env:Path
 If (!(Test-Path -path "${COMPILER_TOOLS_DIR}/ccache.exe" -PathType Leaf)) {
     .github/workflows/install-ccache.ps1 -Destination "${COMPILER_TOOLS_DIR}"
 }
+ccache --zero-stats
 
 # Setup vcpkg
 cd ${CURRDIR}
@@ -16,7 +23,7 @@ cd ${env:VCPKG_INSTALLATION_ROOT}
 
 cd ${CURRDIR}
 & "./scripts/shell/enter_vs_dev_shell.ps1"
-& "${env:VCPKG_INSTALLATION_ROOT}/vcpkg.exe" integrate install
+& "${env:VCPKG_ROOT}/vcpkg.exe" integrate install
 
 # Build COLMAP
 mkdir build
@@ -25,14 +32,14 @@ cmake .. `
     -GNinja `
     -DCMAKE_MAKE_PROGRAM=ninja `
     -DCUDA_ENABLED="OFF" `
+    -DONNX_ENABLED="OFF" `
     -DGUI_ENABLED="OFF" `
     -DCGAL_ENABLED="OFF" `
     -DLSD_ENABLED="OFF" `
     -DCMAKE_BUILD_TYPE="Release" `
     -DCMAKE_TOOLCHAIN_FILE="${env:CMAKE_TOOLCHAIN_FILE}" `
-    -DVCPKG_TARGET_TRIPLET="${env:VCPKG_TARGET_TRIPLET}"
+    -DVCPKG_TARGET_TRIPLET="${env:VCPKG_TARGET_TRIPLET}" `
+    -DFETCHCONTENT_BASE_DIR="${env:FETCHCONTENT_BASE_DIR}"
 ninja install
 
-ccache --show-stats --verbose
-ccache --evict-older-than 1d
 ccache --show-stats --verbose

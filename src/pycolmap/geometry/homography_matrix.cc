@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include "colmap/geometry/homography_matrix.h"
 
 #include "colmap/util/logging.h"
@@ -41,5 +43,4 @@ void BindHomographyMatrixGeometry(py::module& m) {
         "cam_rays2"_a,
         "Recover the most probable pose from the given homography matrix using "
         "the cheirality check.");
-  DefDeprecation(m, "homography_decomposition", "pose_from_homography_matrix");
 }

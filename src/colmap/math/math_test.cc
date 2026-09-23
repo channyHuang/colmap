@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/math/math.h"
 
@@ -42,16 +15,6 @@ TEST(SignOfNumber, Nominal) {
   EXPECT_EQ(SignOfNumber(-std::numeric_limits<float>::infinity()), -1);
 }
 
-TEST(Clamp, Nominal) {
-  EXPECT_EQ(Clamp(0, -1, 1), 0);
-  EXPECT_EQ(Clamp(0, 0, 1), 0);
-  EXPECT_EQ(Clamp(0, -1, 0), 0);
-  EXPECT_EQ(Clamp(0, -1, 1), 0);
-  EXPECT_EQ(Clamp(0, 1, 2), 1);
-  EXPECT_EQ(Clamp(0, -2, -1), -1);
-  EXPECT_EQ(Clamp(0, 0, 0), 0);
-}
-
 TEST(DegToRad, Nominal) {
   EXPECT_EQ(DegToRad(0.0f), 0.0f);
   EXPECT_EQ(DegToRad(0.0), 0.0);
@@ -66,6 +29,13 @@ TEST(RadToDeg, Nominal) {
   EXPECT_LT(std::abs(RadToDeg(M_PI) - 180.0), 1e-6);
 }
 
+TEST(RadToDeg, Roundtrip) {
+  for (int i = 0; i < 360; ++i) {
+    const auto angle = static_cast<double>(i);
+    EXPECT_NEAR(angle, RadToDeg(DegToRad(angle)), 1e-6);
+  }
+}
+
 TEST(Median, Nominal) {
   EXPECT_EQ(Median<int>({1, 2, 3, 4}), 2.5);
   EXPECT_EQ(Median<int>({4, 1, 3, 2}), 2.5);
@@ -78,6 +48,33 @@ TEST(Median, Nominal) {
   EXPECT_EQ(Median<int>({-1, -2, 3, 4}), 1);
   // Test integer overflow scenario.
   EXPECT_EQ(Median<int8_t>({100, 115, 119, 127}), 117);
+}
+
+TEST(MedianAbsoluteDeviation, Nominal) {
+  // {1, 2, 3, 4, 5} -> median=3, deviations={2, 1, 0, 1, 2}, MAD=1
+  auto [median1, mad1] = MedianAbsoluteDeviation<int>({1, 2, 3, 4, 5});
+  EXPECT_EQ(median1, 3);
+  EXPECT_EQ(mad1, 1);
+
+  // {1, 2, 3, 4} -> median=2.5, deviations={1.5, 0.5, 0.5, 1.5}, MAD=1
+  auto [median2, mad2] = MedianAbsoluteDeviation<int>({1, 2, 3, 4});
+  EXPECT_EQ(median2, 2.5);
+  EXPECT_EQ(mad2, 1);
+
+  // Unsorted input: {5, 1, 3, 2, 4} -> same as {1, 2, 3, 4, 5}
+  auto [median3, mad3] = MedianAbsoluteDeviation<int>({5, 1, 3, 2, 4});
+  EXPECT_EQ(median3, 3);
+  EXPECT_EQ(mad3, 1);
+
+  // Single element: {42} -> median=42, MAD=0
+  auto [median4, mad4] = MedianAbsoluteDeviation<int>({42});
+  EXPECT_EQ(median4, 42);
+  EXPECT_EQ(mad4, 0);
+
+  // With outlier: {1, 2, 3, 4, 100} -> median=3, deviations={2, 1, 0, 1, 97}
+  auto [median5, mad5] = MedianAbsoluteDeviation<int>({1, 2, 3, 4, 100});
+  EXPECT_EQ(median5, 3);
+  EXPECT_EQ(mad5, 1);
 }
 
 TEST(Percentile, Nominal) {

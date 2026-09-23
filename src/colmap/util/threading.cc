@@ -1,34 +1,8 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/util/threading.h"
 
+#include "colmap/util/cancellation.h"
 #include "colmap/util/logging.h"
 
 namespace colmap {
@@ -94,7 +68,7 @@ bool Thread::IsStarted() {
 
 bool Thread::IsStopped() {
   std::unique_lock<std::mutex> lock(mutex_);
-  return stopped_;
+  return stopped_ || ScopedSignalHandler::IsInterruptRequested();
 }
 
 bool Thread::IsPaused() {
@@ -191,7 +165,17 @@ ThreadPool::ThreadPool(const int num_threads)
   }
 }
 
-ThreadPool::~ThreadPool() { Stop(); }
+ThreadPool::~ThreadPool() {
+  // Destructors should not throw, so we catch and log fatal instead.
+  try {
+    Stop();
+  } catch (const AggregateException& e) {
+    LOG(FATAL) << "Uncaught exceptions in thread pool destructor: "
+               << e.exceptions().size() << " exception(s) not handled";
+  } catch (...) {
+    LOG(FATAL) << "Uncaught exception in thread pool destructor";
+  }
+}
 
 void ThreadPool::Stop() {
   {
@@ -201,10 +185,13 @@ void ThreadPool::Stop() {
       return;
     }
 
+    CheckFinishedTasks();
+
     stopped_ = true;
 
-    std::queue<std::function<void()>> empty_tasks;
-    std::swap(tasks_, empty_tasks);
+    // Clear the queues.
+    tasks_ = {};
+    finished_task_checkers_ = {};
   }
 
   task_condition_.notify_all();
@@ -222,6 +209,24 @@ void ThreadPool::Wait() {
     finished_condition_.wait(
         lock, [this]() { return tasks_.empty() && num_active_workers_ == 0; });
   }
+
+  CheckFinishedTasks();
+}
+
+void ThreadPool::CheckFinishedTasks() {
+  std::vector<std::exception_ptr> exceptions;
+  while (!finished_task_checkers_.empty()) {
+    auto checker = std::move(finished_task_checkers_.back());
+    finished_task_checkers_.pop_back();
+    try {
+      checker();
+    } catch (...) {
+      exceptions.push_back(std::current_exception());
+    }
+  }
+  if (!exceptions.empty()) {
+    throw AggregateException(std::move(exceptions));
+  }
 }
 
 void ThreadPool::WorkerFunc(const int index) {
@@ -231,7 +236,7 @@ void ThreadPool::WorkerFunc(const int index) {
   }
 
   while (true) {
-    std::function<void()> task;
+    std::function<std::function<void()>()> task;
     {
       std::unique_lock<std::mutex> lock(mutex_);
       task_condition_.wait(lock,
@@ -244,11 +249,12 @@ void ThreadPool::WorkerFunc(const int index) {
       num_active_workers_ += 1;
     }
 
-    task();
+    std::function<void()> finished_task_checker = task();
 
     {
       std::unique_lock<std::mutex> lock(mutex_);
       num_active_workers_ -= 1;
+      finished_task_checkers_.push_back(std::move(finished_task_checker));
     }
 
     finished_condition_.notify_all();

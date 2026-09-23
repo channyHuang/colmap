@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #pragma once
 
@@ -33,11 +6,10 @@
 #include "colmap/retrieval/inverted_file.h"
 #include "colmap/util/eigen_alignment.h"
 #include "colmap/util/endian.h"
+#include "colmap/util/hash_containers.h"
 
 #include <bitset>
 #include <cstdint>
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include <Eigen/Core>
@@ -53,12 +25,12 @@ template <typename kDescType, int kDescDim, int kEmbeddingDim>
 class InvertedIndex {
  public:
   const static int64_t kInvalidWordId;
-  typedef Eigen::Matrix<kDescType, Eigen::Dynamic, kDescDim, Eigen::RowMajor>
-      DescType;
-  typedef typename InvertedFile<kEmbeddingDim>::EntryType EntryType;
-  typedef typename InvertedFile<kEmbeddingDim>::GeomType GeomType;
-  typedef Eigen::Matrix<float, Eigen::Dynamic, kDescDim> ProjMatrixType;
-  typedef Eigen::VectorXf ProjDescType;
+  using DescType =
+      Eigen::Matrix<kDescType, Eigen::Dynamic, kDescDim, Eigen::RowMajor>;
+  using EntryType = typename InvertedFile<kEmbeddingDim>::EntryType;
+  using GeomType = typename InvertedFile<kEmbeddingDim>::GeomType;
+  using ProjMatrixType = Eigen::Matrix<float, Eigen::Dynamic, kDescDim>;
+  using ProjDescType = Eigen::VectorXf;
   using WordIds =
       Eigen::Matrix<int64_t, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
 
@@ -105,14 +77,14 @@ class InvertedIndex {
   float SquaredIDFWeight(int64_t word_id) const;
 
   void FindMatches(int64_t word_id,
-                   const std::unordered_set<int>& image_ids,
+                   const FlatHashSet<int>& image_ids,
                    std::vector<const EntryType*>* matches) const;
 
   // Compute the self-similarity for the image.
   float ComputeSelfSimilarity(const WordIds& word_ids) const;
 
   // Get the identifiers of all indexed images.
-  void GetImageIds(std::unordered_set<int>* image_ids) const;
+  void GetImageIds(FlatHashSet<int>* image_ids) const;
 
   // Read/write the inverted index from/to a binary file.
   void Read(std::istream* in);
@@ -128,7 +100,7 @@ class InvertedIndex {
 
   // For each image in the database, a normalization factor to be used to
   // normalize the votes.
-  std::unordered_map<int, float> normalization_constants_;
+  NodeHashMap<int, float> normalization_constants_;
 
   // The projection matrix used to project SIFT descriptors.
   ProjMatrixType proj_matrix_;
@@ -261,7 +233,7 @@ void InvertedIndex<kDescType, kDescDim, kEmbeddingDim>::Query(
     normalization_weight = 1.0f / std::sqrt(self_similarity);
   }
 
-  std::unordered_map<int, int> score_map;
+  NodeHashMap<int, int> score_map;
   std::vector<ImageScore> inverted_file_scores;
 
   for (typename DescType::Index i = 0; i < descriptors.rows(); ++i) {
@@ -319,7 +291,7 @@ float InvertedIndex<kDescType, kDescDim, kEmbeddingDim>::SquaredIDFWeight(
 template <typename kDescType, int kDescDim, int kEmbeddingDim>
 void InvertedIndex<kDescType, kDescDim, kEmbeddingDim>::FindMatches(
     const int64_t word_id,
-    const std::unordered_set<int>& image_ids,
+    const FlatHashSet<int>& image_ids,
     std::vector<const EntryType*>* matches) const {
   matches->clear();
   const auto& entries = inverted_files_.at(word_id).Entries();
@@ -346,7 +318,7 @@ float InvertedIndex<kDescType, kDescDim, kEmbeddingDim>::ComputeSelfSimilarity(
 
 template <typename kDescType, int kDescDim, int kEmbeddingDim>
 void InvertedIndex<kDescType, kDescDim, kEmbeddingDim>::GetImageIds(
-    std::unordered_set<int>* image_ids) const {
+    FlatHashSet<int>* image_ids) const {
   for (const auto& inverted_file : inverted_files_) {
     inverted_file.GetImageIds(image_ids);
   }
@@ -424,14 +396,14 @@ void InvertedIndex<kDescType, kDescDim, kEmbeddingDim>::Write(
 template <typename kDescType, int kDescDim, int kEmbeddingDim>
 void InvertedIndex<kDescType, kDescDim, kEmbeddingDim>::
     ComputeWeightsAndNormalizationConstants() {
-  std::unordered_set<int> image_ids;
+  FlatHashSet<int> image_ids;
   GetImageIds(&image_ids);
 
   for (auto& inverted_file : inverted_files_) {
     inverted_file.ComputeIDFWeight(image_ids.size());
   }
 
-  std::unordered_map<int, double> self_similarities;
+  NodeHashMap<int, double> self_similarities;
   self_similarities.reserve(image_ids.size());
   for (const auto& inverted_file : inverted_files_) {
     inverted_file.ComputeImageSelfSimilarities(&self_similarities);

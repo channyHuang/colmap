@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include "colmap/optim/ransac.h"
 
 #include "pycolmap/helpers.h"
@@ -27,6 +29,7 @@ void BindOptim(py::module& m) {
           .def_readwrite("min_num_trials", &RANSACOptions::min_num_trials)
           .def_readwrite("max_num_trials", &RANSACOptions::max_num_trials)
           .def_readwrite("random_seed", &RANSACOptions::random_seed)
+          .def_readwrite("num_threads", &RANSACOptions::num_threads)
           .def("check", &RANSACOptions::Check);
   MakeDataclass(PyRANSACOptions);
 }

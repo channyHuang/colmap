@@ -1,49 +1,24 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #pragma once
 
 #include "colmap/controllers/option_manager.h"
-#include "colmap/scene/database.h"
 #include "colmap/scene/reconstruction.h"
 #include "colmap/ui/colormaps.h"
 #include "colmap/ui/image_viewer_widget.h"
 #include "colmap/ui/line_painter.h"
+#include "colmap/ui/mesh_painter.h"
 #include "colmap/ui/movie_grabber_widget.h"
 #include "colmap/ui/point_painter.h"
 #include "colmap/ui/point_viewer_widget.h"
-#include "colmap/ui/render_options.h"
 #include "colmap/ui/triangle_painter.h"
+#include "colmap/util/hash_containers.h"
+#include "colmap/util/ply.h"
 
 #include <QOpenGLFunctions_3_2_Core>
 #include <QtCore>
 #include <QtOpenGL>
+#include <optional>
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 #include <QOpenGLWidget>
 #endif
@@ -74,15 +49,15 @@ class ModelViewerWidget : public QOpenGLWidget,
   const int kDoubleClickInterval = 250;
 
   ModelViewerWidget(QWidget* parent, OptionManager* options);
+  ~ModelViewerWidget() override;
 
   void ReloadReconstruction();
   void ClearReconstruction();
 
   int GetProjectionType() const;
 
-  // Takes ownwership of the colormap objects.
-  void SetPointColormap(PointColormapBase* colormap);
-  void SetImageColormap(ImageColormapBase* colormap);
+  void SetPointColormap(std::unique_ptr<PointColormapBase> colormap);
+  void SetImageColormap(std::unique_ptr<ImageColormapBase> colormap);
 
   void UpdateMovieGrabber();
 
@@ -120,12 +95,18 @@ class ModelViewerWidget : public QOpenGLWidget,
 
   // Copy of current scene data that is displayed
   std::shared_ptr<Reconstruction> reconstruction;
-  std::unordered_map<rig_t, Rig> rigs;
-  std::unordered_map<camera_t, Camera> cameras;
-  std::unordered_map<frame_t, Frame> frames;
-  std::unordered_map<image_t, Image> images;
-  std::unordered_map<point3D_t, Point3D> points3D;
+  NodeHashMap<rig_t, Rig> rigs;
+  NodeHashMap<camera_t, Camera> cameras;
+  NodeHashMap<frame_t, Frame> frames;
+  NodeHashMap<image_t, Image> images;
+  NodeHashMap<point3D_t, Point3D> points3D;
   std::vector<image_t> reg_image_ids;
+
+  std::optional<std::vector<PlyPoint>> point_cloud;
+  std::optional<PlyTexturedMesh> surface_mesh;
+  std::vector<uint8_t> surface_texture_data;
+  int surface_texture_width = 0;
+  int surface_texture_height = 0;
 
   QLabel* statusbar_status_label;
 
@@ -152,6 +133,8 @@ class ModelViewerWidget : public QOpenGLWidget,
   void UploadImageData(bool selection_mode = false);
   void UploadImageConnectionData();
   void UploadMovieGrabberData();
+  void UploadPointCloudData();
+  void UploadSurfaceMeshData();
 
   void ComposeProjectionMatrix();
 
@@ -178,10 +161,15 @@ class ModelViewerWidget : public QOpenGLWidget,
   LinePainter image_line_painter_;
   TrianglePainter image_triangle_painter_;
   LinePainter image_connection_painter_;
+  // Thicker overlay lines for spherical cameras (image-center indicators).
+  LinePainter image_axis_painter_;
 
   LinePainter movie_grabber_path_painter_;
   LinePainter movie_grabber_line_painter_;
   TrianglePainter movie_grabber_triangle_painter_;
+
+  PointPainter point_cloud_painter_;
+  MeshPainter mesh_painter_;
 
   PointViewerWidget* point_viewer_widget_;
   DatabaseImageViewerWidget* image_viewer_widget_;
@@ -196,7 +184,13 @@ class ModelViewerWidget : public QOpenGLWidget,
 
   float focus_distance_;
 
-  std::vector<std::pair<size_t, char>> selection_buffer_;
+  // Type of selection buffer entries.
+  enum class SelectionType : char {
+    kImage = 0,
+    kPoint = 1,
+  };
+
+  std::vector<std::pair<size_t, SelectionType>> selection_buffer_;
   image_t selected_image_id_;
   point3D_t selected_point3D_id_;
   size_t selected_movie_grabber_view_;

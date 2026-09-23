@@ -1,36 +1,8 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/ui/image_viewer_widget.h"
 
 #include "colmap/ui/model_viewer_widget.h"
-#include "colmap/util/file.h"
 
 namespace colmap {
 
@@ -118,10 +90,11 @@ void ImageViewerWidget::ShowPixmap(const QPixmap& pixmap) {
   raise();
 }
 
-void ImageViewerWidget::ReadAndShow(const std::string& path) {
+void ImageViewerWidget::ReadAndShow(const std::filesystem::path& path) {
   Bitmap bitmap;
-  if (!bitmap.Read(path, true)) {
+  if (!bitmap.Read(path, /*as_rgb=*/true)) {
     LOG(ERROR) << "Cannot read image at path " << path;
+    return;
   }
 
   ShowBitmap(bitmap);
@@ -169,12 +142,17 @@ FeatureImageViewerWidget::FeatureImageViewerWidget(
 }
 
 void FeatureImageViewerWidget::ReadAndShowWithKeypoints(
-    const std::string& path,
+    const std::filesystem::path& path,
     const FeatureKeypoints& keypoints,
     const std::vector<char>& tri_mask) {
   Bitmap bitmap;
-  if (!bitmap.Read(path, true)) {
-    LOG(ERROR) << "Cannot read image at path " << path;
+  if (!bitmap.Read(path, /*as_rgb=*/true)) {
+    LOG(WARNING) << "Cannot read image at path " << path
+                 << ", showing metadata only";
+    image1_ = QPixmap();
+    image2_ = image1_;
+    ShowPixmap(image1_);
+    return;
   }
 
   image1_ = QPixmap::fromImage(BitmapToQImageRGB(bitmap));
@@ -185,15 +163,13 @@ void FeatureImageViewerWidget::ReadAndShowWithKeypoints(
 
   FeatureKeypoints keypoints_tri(num_tri_keypoints);
   FeatureKeypoints keypoints_not_tri(keypoints.size() - num_tri_keypoints);
-  size_t i_tri = 0;
-  size_t i_not_tri = 0;
+  size_t idx_tri = 0;
+  size_t idx_not_tri = 0;
   for (size_t i = 0; i < tri_mask.size(); ++i) {
     if (tri_mask[i]) {
-      keypoints_tri[i_tri] = keypoints[i];
-      i_tri += 1;
+      keypoints_tri[idx_tri++] = keypoints[i];
     } else {
-      keypoints_not_tri[i_not_tri] = keypoints[i];
-      i_not_tri += 1;
+      keypoints_not_tri[idx_not_tri++] = keypoints[i];
     }
   }
 
@@ -208,14 +184,15 @@ void FeatureImageViewerWidget::ReadAndShowWithKeypoints(
 }
 
 void FeatureImageViewerWidget::ReadAndShowWithMatches(
-    const std::string& path1,
-    const std::string& path2,
+    const std::filesystem::path& path1,
+    const std::filesystem::path& path2,
     const FeatureKeypoints& keypoints1,
     const FeatureKeypoints& keypoints2,
     const FeatureMatches& matches) {
   Bitmap bitmap1;
   Bitmap bitmap2;
-  if (!bitmap1.Read(path1, true) || !bitmap2.Read(path2, true)) {
+  if (!bitmap1.Read(path1, /*as_rgb=*/true) ||
+      !bitmap2.Read(path2, /*as_rgb=*/true)) {
     LOG(ERROR) << "Cannot read images at paths " << path1 << " and " << path2;
     return;
   }
@@ -372,15 +349,15 @@ void DatabaseImageViewerWidget::ShowImageWithId(const image_t image_id) {
     keypoints[i].y = static_cast<float>(image.Point2D(i).xy(1));
   }
 
-  const std::string path = JoinPaths(*options_->image_path, image.Name());
+  const auto path = *options_->image_path / image.Name();
   ReadAndShowWithKeypoints(path, keypoints, tri_mask);
 }
 
 void DatabaseImageViewerWidget::ResizeTable() {
-  // Set fixed table dimensions.
+  // Set fixed table dimensions. The horizontal header is hidden, so its height
+  // must not be included or it leaves an empty strip below the last row.
   table_widget_->resizeColumnsToContents();
-  int height = table_widget_->horizontalHeader()->height() +
-               2 * table_widget_->frameWidth();
+  int height = 2 * table_widget_->frameWidth();
   for (int i = 0; i < table_widget_->rowCount(); i++) {
     height += table_widget_->rowHeight(i);
   }

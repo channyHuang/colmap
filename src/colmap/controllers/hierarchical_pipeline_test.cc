@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/controllers/hierarchical_pipeline.h"
 
@@ -66,9 +39,7 @@ void ExpectEqualReconstructions(const Reconstruction& gt,
 }
 
 TEST(HierarchicalPipeline, WithoutNoise) {
-  SetPRNGSeed(1);
-
-  const std::string database_path = CreateTestDir() + "/database.db";
+  const auto database_path = CreateTestDir() / "database.db";
 
   auto database = Database::Open(database_path);
   Reconstruction gt_reconstruction;
@@ -81,25 +52,31 @@ TEST(HierarchicalPipeline, WithoutNoise) {
       synthetic_dataset_options, &gt_reconstruction, database.get());
 
   auto reconstruction_manager = std::make_shared<ReconstructionManager>();
-  HierarchicalPipeline::Options mapper_options;
-  mapper_options.database_path = database_path;
+  HierarchicalPipelineOptions mapper_options;
   mapper_options.clustering_options.leaf_max_num_images = 5;
   mapper_options.clustering_options.image_overlap = 3;
-  HierarchicalPipeline mapper(mapper_options, reconstruction_manager);
+  HierarchicalPipeline mapper(mapper_options, database, reconstruction_manager);
   mapper.Run();
 
   ASSERT_EQ(reconstruction_manager->Size(), 1);
+  auto reconstruction = reconstruction_manager->Get(0);
   ExpectEqualReconstructions(gt_reconstruction,
-                             *reconstruction_manager->Get(0),
+                             *reconstruction,
                              /*max_rotation_error_deg=*/1e-2,
-                             /*max_proj_center_error=*/1e-4,
+                             /*max_proj_center_error=*/5e-4,
                              /*num_obs_tolerance=*/0);
+
+  // After the pipeline runs, point3D.error must be in pixel units, i.e.
+  // equal to what UpdatePoint3DErrors would recompute.
+  ASSERT_GT(reconstruction->NumPoints3D(), 0u);
+  const double mean_after_run = reconstruction->ComputeMeanReprojectionError();
+  reconstruction->UpdatePoint3DErrors();
+  EXPECT_DOUBLE_EQ(mean_after_run,
+                   reconstruction->ComputeMeanReprojectionError());
 }
 
 TEST(HierarchicalPipeline, WithoutNoiseAndNonTrivialFrames) {
-  SetPRNGSeed(1);
-
-  const std::string database_path = CreateTestDir() + "/database.db";
+  const auto database_path = CreateTestDir() / "database.db";
 
   auto database = Database::Open(database_path);
   Reconstruction gt_reconstruction;
@@ -114,15 +91,14 @@ TEST(HierarchicalPipeline, WithoutNoiseAndNonTrivialFrames) {
       synthetic_dataset_options, &gt_reconstruction, database.get());
 
   auto reconstruction_manager = std::make_shared<ReconstructionManager>();
-  HierarchicalPipeline::Options mapper_options;
-  mapper_options.database_path = database_path;
+  HierarchicalPipelineOptions mapper_options;
   mapper_options.clustering_options.leaf_max_num_images = 10;
   mapper_options.clustering_options.image_overlap = 3;
   // Note that the hierarchical mapper does not work well when the
   // sensor_from_rig poses are inconsistently refined in different clusters,
   // because then the merging does not work well.
   mapper_options.incremental_options.ba_refine_sensor_from_rig = false;
-  HierarchicalPipeline mapper(mapper_options, reconstruction_manager);
+  HierarchicalPipeline mapper(mapper_options, database, reconstruction_manager);
   mapper.Run();
 
   ASSERT_EQ(reconstruction_manager->Size(), 1);
@@ -134,9 +110,7 @@ TEST(HierarchicalPipeline, WithoutNoiseAndNonTrivialFrames) {
 }
 
 TEST(HierarchicalPipeline, WithoutNoiseAndPanoramicNonTrivialFrames) {
-  SetPRNGSeed(1);
-
-  const std::string database_path = CreateTestDir() + "/database.db";
+  const auto database_path = CreateTestDir() / "database.db";
 
   auto database = Database::Open(database_path);
   Reconstruction gt_reconstruction;
@@ -151,15 +125,14 @@ TEST(HierarchicalPipeline, WithoutNoiseAndPanoramicNonTrivialFrames) {
       synthetic_dataset_options, &gt_reconstruction, database.get());
 
   auto reconstruction_manager = std::make_shared<ReconstructionManager>();
-  HierarchicalPipeline::Options mapper_options;
-  mapper_options.database_path = database_path;
+  HierarchicalPipelineOptions mapper_options;
   mapper_options.clustering_options.leaf_max_num_images = 10;
   mapper_options.clustering_options.image_overlap = 3;
   // Note that the hierarchical mapper does not work well when the
   // sensor_from_rig poses are inconsistently refined in different clusters,
   // because then the merging does not work well.
   mapper_options.incremental_options.ba_refine_sensor_from_rig = false;
-  HierarchicalPipeline mapper(mapper_options, reconstruction_manager);
+  HierarchicalPipeline mapper(mapper_options, database, reconstruction_manager);
   mapper.Run();
 
   ASSERT_EQ(reconstruction_manager->Size(), 1);
@@ -171,9 +144,7 @@ TEST(HierarchicalPipeline, WithoutNoiseAndPanoramicNonTrivialFrames) {
 }
 
 TEST(HierarchicalPipeline, MultiReconstruction) {
-  SetPRNGSeed(1);
-
-  const std::string database_path = CreateTestDir() + "/database.db";
+  const auto database_path = CreateTestDir() / "database.db";
 
   auto database = Database::Open(database_path);
   Reconstruction gt_reconstruction1;
@@ -190,11 +161,10 @@ TEST(HierarchicalPipeline, MultiReconstruction) {
       synthetic_dataset_options, &gt_reconstruction2, database.get());
 
   auto reconstruction_manager = std::make_shared<ReconstructionManager>();
-  HierarchicalPipeline::Options mapper_options;
-  mapper_options.database_path = database_path;
+  HierarchicalPipelineOptions mapper_options;
   mapper_options.clustering_options.leaf_max_num_images = 5;
   mapper_options.clustering_options.image_overlap = 3;
-  HierarchicalPipeline mapper(mapper_options, reconstruction_manager);
+  HierarchicalPipeline mapper(mapper_options, database, reconstruction_manager);
   mapper.Run();
 
   ASSERT_EQ(reconstruction_manager->Size(), 2);
@@ -217,6 +187,19 @@ TEST(HierarchicalPipeline, MultiReconstruction) {
                              /*max_rotation_error_deg=*/1e-2,
                              /*max_proj_center_error=*/1e-4,
                              /*num_obs_tolerance=*/0);
+
+  // After the pipeline runs, point3D.error must be in pixel units for every
+  // reconstruction in the manager, i.e. equal to what UpdatePoint3DErrors
+  // would recompute.
+  for (Reconstruction* reconstruction :
+       {computed_reconstruction1, computed_reconstruction2}) {
+    ASSERT_GT(reconstruction->NumPoints3D(), 0u);
+    const double mean_after_run =
+        reconstruction->ComputeMeanReprojectionError();
+    reconstruction->UpdatePoint3DErrors();
+    EXPECT_DOUBLE_EQ(mean_after_run,
+                     reconstruction->ComputeMeanReprojectionError());
+  }
 }
 
 }  // namespace

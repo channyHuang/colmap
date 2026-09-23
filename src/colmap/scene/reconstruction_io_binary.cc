@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/geometry/rigid3.h"
 #include "colmap/scene/camera.h"
@@ -37,6 +10,7 @@
 #include "colmap/scene/track.h"
 #include "colmap/util/endian.h"
 #include "colmap/util/file.h"
+#include "colmap/util/hash_containers.h"
 #include "colmap/util/types.h"
 
 #include <fstream>
@@ -72,19 +46,19 @@ void ReadRigsBinary(Reconstruction& reconstruction, std::istream& stream) {
         std::optional<Rigid3d> sensor_from_rig;
         if (has_pose) {
           sensor_from_rig = Rigid3d();
-          sensor_from_rig->rotation.w() =
+          sensor_from_rig->rotation().w() =
               ReadBinaryLittleEndian<double>(&stream);
-          sensor_from_rig->rotation.x() =
+          sensor_from_rig->rotation().x() =
               ReadBinaryLittleEndian<double>(&stream);
-          sensor_from_rig->rotation.y() =
+          sensor_from_rig->rotation().y() =
               ReadBinaryLittleEndian<double>(&stream);
-          sensor_from_rig->rotation.z() =
+          sensor_from_rig->rotation().z() =
               ReadBinaryLittleEndian<double>(&stream);
-          sensor_from_rig->translation.x() =
+          sensor_from_rig->translation().x() =
               ReadBinaryLittleEndian<double>(&stream);
-          sensor_from_rig->translation.y() =
+          sensor_from_rig->translation().y() =
               ReadBinaryLittleEndian<double>(&stream);
-          sensor_from_rig->translation.z() =
+          sensor_from_rig->translation().z() =
               ReadBinaryLittleEndian<double>(&stream);
         }
 
@@ -96,7 +70,8 @@ void ReadRigsBinary(Reconstruction& reconstruction, std::istream& stream) {
   }
 }
 
-void ReadRigsBinary(Reconstruction& reconstruction, const std::string& path) {
+void ReadRigsBinary(Reconstruction& reconstruction,
+                    const std::filesystem::path& path) {
   std::ifstream file(path, std::ios::binary);
   THROW_CHECK_FILE_OPEN(file, path);
   ReadRigsBinary(reconstruction, file);
@@ -121,7 +96,7 @@ void ReadCamerasBinary(Reconstruction& reconstruction, std::istream& stream) {
 }
 
 void ReadCamerasBinary(Reconstruction& reconstruction,
-                       const std::string& path) {
+                       const std::filesystem::path& path) {
   std::ifstream file(path, std::ios::binary);
   THROW_CHECK_FILE_OPEN(file, path);
   ReadCamerasBinary(reconstruction, file);
@@ -138,13 +113,13 @@ void ReadFramesBinary(Reconstruction& reconstruction, std::istream& stream) {
     frame.SetRigId(ReadBinaryLittleEndian<rig_t>(&stream));
 
     Rigid3d rig_from_world;
-    rig_from_world.rotation.w() = ReadBinaryLittleEndian<double>(&stream);
-    rig_from_world.rotation.x() = ReadBinaryLittleEndian<double>(&stream);
-    rig_from_world.rotation.y() = ReadBinaryLittleEndian<double>(&stream);
-    rig_from_world.rotation.z() = ReadBinaryLittleEndian<double>(&stream);
-    rig_from_world.translation.x() = ReadBinaryLittleEndian<double>(&stream);
-    rig_from_world.translation.y() = ReadBinaryLittleEndian<double>(&stream);
-    rig_from_world.translation.z() = ReadBinaryLittleEndian<double>(&stream);
+    rig_from_world.rotation().w() = ReadBinaryLittleEndian<double>(&stream);
+    rig_from_world.rotation().x() = ReadBinaryLittleEndian<double>(&stream);
+    rig_from_world.rotation().y() = ReadBinaryLittleEndian<double>(&stream);
+    rig_from_world.rotation().z() = ReadBinaryLittleEndian<double>(&stream);
+    rig_from_world.translation().x() = ReadBinaryLittleEndian<double>(&stream);
+    rig_from_world.translation().y() = ReadBinaryLittleEndian<double>(&stream);
+    rig_from_world.translation().z() = ReadBinaryLittleEndian<double>(&stream);
     frame.SetRigFromWorld(rig_from_world);
 
     const uint32_t num_data_ids = ReadBinaryLittleEndian<uint32_t>(&stream);
@@ -161,7 +136,8 @@ void ReadFramesBinary(Reconstruction& reconstruction, std::istream& stream) {
   }
 }
 
-void ReadFramesBinary(Reconstruction& reconstruction, const std::string& path) {
+void ReadFramesBinary(Reconstruction& reconstruction,
+                      const std::filesystem::path& path) {
   std::ifstream file(path, std::ios::binary);
   THROW_CHECK_FILE_OPEN(file, path);
   ReadFramesBinary(reconstruction, file);
@@ -177,7 +153,7 @@ void ReadImagesBinary(Reconstruction& reconstruction, std::istream& stream) {
     CreateOneRigPerCamera(reconstruction);
   }
 
-  const std::unordered_map<image_t, Frame*> image_to_frame =
+  const NodeHashMap<image_t, Frame*> image_to_frame =
       ExtractImageToFramePtr(reconstruction);
 
   std::vector<Eigen::Vector2d> points2D;
@@ -190,13 +166,13 @@ void ReadImagesBinary(Reconstruction& reconstruction, std::istream& stream) {
     image.SetImageId(ReadBinaryLittleEndian<image_t>(&stream));
 
     Rigid3d cam_from_world;
-    cam_from_world.rotation.w() = ReadBinaryLittleEndian<double>(&stream);
-    cam_from_world.rotation.x() = ReadBinaryLittleEndian<double>(&stream);
-    cam_from_world.rotation.y() = ReadBinaryLittleEndian<double>(&stream);
-    cam_from_world.rotation.z() = ReadBinaryLittleEndian<double>(&stream);
-    cam_from_world.translation.x() = ReadBinaryLittleEndian<double>(&stream);
-    cam_from_world.translation.y() = ReadBinaryLittleEndian<double>(&stream);
-    cam_from_world.translation.z() = ReadBinaryLittleEndian<double>(&stream);
+    cam_from_world.rotation().w() = ReadBinaryLittleEndian<double>(&stream);
+    cam_from_world.rotation().x() = ReadBinaryLittleEndian<double>(&stream);
+    cam_from_world.rotation().y() = ReadBinaryLittleEndian<double>(&stream);
+    cam_from_world.rotation().z() = ReadBinaryLittleEndian<double>(&stream);
+    cam_from_world.translation().x() = ReadBinaryLittleEndian<double>(&stream);
+    cam_from_world.translation().y() = ReadBinaryLittleEndian<double>(&stream);
+    cam_from_world.translation().z() = ReadBinaryLittleEndian<double>(&stream);
 
     image.SetCameraId(ReadBinaryLittleEndian<camera_t>(&stream));
 
@@ -244,7 +220,8 @@ void ReadImagesBinary(Reconstruction& reconstruction, std::istream& stream) {
   }
 }
 
-void ReadImagesBinary(Reconstruction& reconstruction, const std::string& path) {
+void ReadImagesBinary(Reconstruction& reconstruction,
+                      const std::filesystem::path& path) {
   std::ifstream file(path, std::ios::binary);
   THROW_CHECK_FILE_OPEN(file, path);
   ReadImagesBinary(reconstruction, file);
@@ -280,7 +257,7 @@ void ReadPoints3DBinary(Reconstruction& reconstruction, std::istream& stream) {
 }
 
 void ReadPoints3DBinary(Reconstruction& reconstruction,
-                        const std::string& path) {
+                        const std::filesystem::path& path) {
   std::ifstream file(path, std::ios::binary);
   THROW_CHECK_FILE_OPEN(file, path);
   ReadPoints3DBinary(reconstruction, file);
@@ -307,23 +284,27 @@ void WriteRigsBinary(const Reconstruction& reconstruction,
       WriteBinaryLittleEndian<uint8_t>(&stream,
                                        sensor_from_rig.has_value() ? 1 : 0);
       if (sensor_from_rig.has_value()) {
-        WriteBinaryLittleEndian<double>(&stream, sensor_from_rig->rotation.w());
-        WriteBinaryLittleEndian<double>(&stream, sensor_from_rig->rotation.x());
-        WriteBinaryLittleEndian<double>(&stream, sensor_from_rig->rotation.y());
-        WriteBinaryLittleEndian<double>(&stream, sensor_from_rig->rotation.z());
         WriteBinaryLittleEndian<double>(&stream,
-                                        sensor_from_rig->translation.x());
+                                        sensor_from_rig->rotation().w());
         WriteBinaryLittleEndian<double>(&stream,
-                                        sensor_from_rig->translation.y());
+                                        sensor_from_rig->rotation().x());
         WriteBinaryLittleEndian<double>(&stream,
-                                        sensor_from_rig->translation.z());
+                                        sensor_from_rig->rotation().y());
+        WriteBinaryLittleEndian<double>(&stream,
+                                        sensor_from_rig->rotation().z());
+        WriteBinaryLittleEndian<double>(&stream,
+                                        sensor_from_rig->translation().x());
+        WriteBinaryLittleEndian<double>(&stream,
+                                        sensor_from_rig->translation().y());
+        WriteBinaryLittleEndian<double>(&stream,
+                                        sensor_from_rig->translation().z());
       }
     }
   }
 }
 
 void WriteRigsBinary(const Reconstruction& reconstruction,
-                     const std::string& path) {
+                     const std::filesystem::path& path) {
   std::ofstream file(path, std::ios::trunc | std::ios::binary);
   THROW_CHECK_FILE_OPEN(file, path);
   WriteRigsBinary(reconstruction, file);
@@ -348,7 +329,7 @@ void WriteCamerasBinary(const Reconstruction& reconstruction,
 }
 
 void WriteCamerasBinary(const Reconstruction& reconstruction,
-                        const std::string& path) {
+                        const std::filesystem::path& path) {
   std::ofstream file(path, std::ios::trunc | std::ios::binary);
   THROW_CHECK_FILE_OPEN(file, path);
   WriteCamerasBinary(reconstruction, file);
@@ -371,13 +352,13 @@ void WriteFramesBinary(const Reconstruction& reconstruction,
     WriteBinaryLittleEndian<rig_t>(&stream, frame.RigId());
 
     const Rigid3d& rig_from_world = frame.RigFromWorld();
-    WriteBinaryLittleEndian<double>(&stream, rig_from_world.rotation.w());
-    WriteBinaryLittleEndian<double>(&stream, rig_from_world.rotation.x());
-    WriteBinaryLittleEndian<double>(&stream, rig_from_world.rotation.y());
-    WriteBinaryLittleEndian<double>(&stream, rig_from_world.rotation.z());
-    WriteBinaryLittleEndian<double>(&stream, rig_from_world.translation.x());
-    WriteBinaryLittleEndian<double>(&stream, rig_from_world.translation.y());
-    WriteBinaryLittleEndian<double>(&stream, rig_from_world.translation.z());
+    WriteBinaryLittleEndian<double>(&stream, rig_from_world.rotation().w());
+    WriteBinaryLittleEndian<double>(&stream, rig_from_world.rotation().x());
+    WriteBinaryLittleEndian<double>(&stream, rig_from_world.rotation().y());
+    WriteBinaryLittleEndian<double>(&stream, rig_from_world.rotation().z());
+    WriteBinaryLittleEndian<double>(&stream, rig_from_world.translation().x());
+    WriteBinaryLittleEndian<double>(&stream, rig_from_world.translation().y());
+    WriteBinaryLittleEndian<double>(&stream, rig_from_world.translation().z());
 
     const std::set<data_t>& data_ids = frame.DataIds();
     WriteBinaryLittleEndian<uint32_t>(&stream, data_ids.size());
@@ -391,7 +372,7 @@ void WriteFramesBinary(const Reconstruction& reconstruction,
 }
 
 void WriteFramesBinary(const Reconstruction& reconstruction,
-                       const std::string& path) {
+                       const std::filesystem::path& path) {
   std::ofstream file(path, std::ios::trunc | std::ios::binary);
   THROW_CHECK_FILE_OPEN(file, path);
   WriteFramesBinary(reconstruction, file);
@@ -409,13 +390,13 @@ void WriteImagesBinary(const Reconstruction& reconstruction,
     WriteBinaryLittleEndian<image_t>(&stream, image_id);
 
     const Rigid3d& cam_from_world = image.CamFromWorld();
-    WriteBinaryLittleEndian<double>(&stream, cam_from_world.rotation.w());
-    WriteBinaryLittleEndian<double>(&stream, cam_from_world.rotation.x());
-    WriteBinaryLittleEndian<double>(&stream, cam_from_world.rotation.y());
-    WriteBinaryLittleEndian<double>(&stream, cam_from_world.rotation.z());
-    WriteBinaryLittleEndian<double>(&stream, cam_from_world.translation.x());
-    WriteBinaryLittleEndian<double>(&stream, cam_from_world.translation.y());
-    WriteBinaryLittleEndian<double>(&stream, cam_from_world.translation.z());
+    WriteBinaryLittleEndian<double>(&stream, cam_from_world.rotation().w());
+    WriteBinaryLittleEndian<double>(&stream, cam_from_world.rotation().x());
+    WriteBinaryLittleEndian<double>(&stream, cam_from_world.rotation().y());
+    WriteBinaryLittleEndian<double>(&stream, cam_from_world.rotation().z());
+    WriteBinaryLittleEndian<double>(&stream, cam_from_world.translation().x());
+    WriteBinaryLittleEndian<double>(&stream, cam_from_world.translation().y());
+    WriteBinaryLittleEndian<double>(&stream, cam_from_world.translation().z());
 
     WriteBinaryLittleEndian<camera_t>(&stream, image.CameraId());
 
@@ -432,7 +413,7 @@ void WriteImagesBinary(const Reconstruction& reconstruction,
 }
 
 void WriteImagesBinary(const Reconstruction& reconstruction,
-                       const std::string& path) {
+                       const std::filesystem::path& path) {
   std::ofstream file(path, std::ios::trunc | std::ios::binary);
   THROW_CHECK_FILE_OPEN(file, path);
   WriteImagesBinary(reconstruction, file);
@@ -466,7 +447,7 @@ void WritePoints3DBinary(const Reconstruction& reconstruction,
 }
 
 void WritePoints3DBinary(const Reconstruction& reconstruction,
-                         const std::string& path) {
+                         const std::filesystem::path& path) {
   std::ofstream file(path, std::ios::trunc | std::ios::binary);
   THROW_CHECK_FILE_OPEN(file, path);
   WritePoints3DBinary(reconstruction, file);

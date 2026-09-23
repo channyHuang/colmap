@@ -1,41 +1,14 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/estimators/alignment.h"
 
-#include "colmap/estimators/similarity_transform.h"
+#include "colmap/estimators/solvers/similarity_transform.h"
 #include "colmap/geometry/pose.h"
+#include "colmap/math/math.h"
 #include "colmap/optim/loransac.h"
 #include "colmap/scene/projection.h"
+#include "colmap/util/hash_containers.h"
 #include "colmap/util/logging.h"
-
-#include <unordered_map>
 
 namespace colmap {
 namespace {
@@ -43,9 +16,9 @@ namespace {
 struct ReconstructionAlignmentEstimator {
   static const int kMinNumSamples = 3;
 
-  typedef const Image* X_t;
-  typedef const Image* Y_t;
-  typedef Sim3d M_t;
+  using X_t = const Image*;
+  using Y_t = const Image*;
+  using M_t = Sim3d;
 
   ReconstructionAlignmentEstimator(double max_reproj_error,
                                    const Reconstruction* src_reconstruction,
@@ -194,7 +167,7 @@ bool AlignReconstructionToLocations(
 
   // Find out which images are contained in the reconstruction and get the
   // positions of their camera centers.
-  std::unordered_set<image_t> common_image_ids;
+  FlatHashSet<image_t> common_image_ids;
   std::vector<Eigen::Vector3d> src;
   std::vector<Eigen::Vector3d> dst;
   for (size_t i = 0; i < tgt_image_names.size(); ++i) {
@@ -239,21 +212,40 @@ bool AlignReconstructionToLocations(
 
 bool AlignReconstructionToPosePriors(
     const Reconstruction& src_reconstruction,
-    const std::unordered_map<image_t, PosePrior>& tgt_pose_priors,
-    const RANSACOptions& ransac_options,
+    const std::vector<PosePrior>& tgt_pose_priors,
+    RANSACOptions ransac_options,
+    const double prior_position_fallback_stddev,
     Sim3d* tgt_from_src) {
+  THROW_CHECK_GT(prior_position_fallback_stddev, 0.0);
+
   std::vector<Eigen::Vector3d> src;
   std::vector<Eigen::Vector3d> tgt;
+  std::vector<double> rms_vars;
   src.reserve(tgt_pose_priors.size());
   tgt.reserve(tgt_pose_priors.size());
+  rms_vars.reserve(tgt_pose_priors.size());
+
+  NodeHashMap<image_t, PosePrior> tgt_image_to_pose_prior;
+  for (const auto& pose_prior : tgt_pose_priors) {
+    if (pose_prior.corr_data_id.sensor_id.type == SensorType::CAMERA &&
+        pose_prior.HasPosition()) {
+      THROW_CHECK(tgt_image_to_pose_prior
+                      .emplace(pose_prior.corr_data_id.id, pose_prior)
+                      .second)
+          << "Duplicate pose prior for image " << pose_prior.corr_data_id.id;
+    }
+  }
 
   for (const image_t image_id : src_reconstruction.RegImageIds()) {
-    const auto pose_prior_it = tgt_pose_priors.find(image_id);
-    if (pose_prior_it != tgt_pose_priors.end() &&
-        pose_prior_it->second.IsValid()) {
+    const auto pose_prior_it = tgt_image_to_pose_prior.find(image_id);
+    if (pose_prior_it != tgt_image_to_pose_prior.end()) {
       const auto& image = src_reconstruction.Image(image_id);
       src.push_back(image.ProjectionCenter());
       tgt.push_back(pose_prior_it->second.position);
+      const double trace = pose_prior_it->second.position_covariance.trace();
+      if (trace > 0.0) {
+        rms_vars.push_back(trace / 3.0);
+      }
     }
   }
 
@@ -262,10 +254,21 @@ bool AlignReconstructionToPosePriors(
     return false;
   }
 
-  if (ransac_options.max_error > 0) {
-    return EstimateSim3dRobust(src, tgt, ransac_options, *tgt_from_src).success;
+  if (ransac_options.max_error <= 0) {
+    if (rms_vars.empty()) {
+      LOG(WARNING) << "No pose priors with valid covariance found.";
+      rms_vars.push_back(prior_position_fallback_stddev *
+                         prior_position_fallback_stddev);
+    }
+
+    // Scale the median RMS variance by the 95% chi-square quantile for 3 DOF.
+    ransac_options.max_error =
+        std::sqrt(kChiSquare95ThreeDof * Median(rms_vars));
   }
-  return EstimateSim3d(src, tgt, *tgt_from_src);
+
+  VLOG(2) << "Robustly aligning reconstruction with max_error="
+          << ransac_options.max_error;
+  return EstimateSim3dRobust(src, tgt, ransac_options, *tgt_from_src).success;
 }
 
 bool AlignReconstructionsViaReprojections(
@@ -357,10 +360,10 @@ std::vector<ImageAlignmentError> ComputeImageAlignmentError(
     ImageAlignmentError error;
     error.image_name = src_image.Name();
     error.rotation_error_deg =
-        RadToDeg(tgt_world_from_src_cam.rotation.angularDistance(
-            tgt_world_from_tgt_cam.rotation));
-    error.proj_center_error = (tgt_world_from_src_cam.translation -
-                               tgt_world_from_tgt_cam.translation)
+        RadToDeg(tgt_world_from_src_cam.rotation().angularDistance(
+            tgt_world_from_tgt_cam.rotation()));
+    error.proj_center_error = (tgt_world_from_src_cam.translation() -
+                               tgt_world_from_tgt_cam.translation())
                                   .norm();
     errors.push_back(error);
   }
@@ -380,7 +383,7 @@ bool AlignReconstructionsViaPoints(const Reconstruction& src_reconstruction,
 
   std::vector<Eigen::Vector3d> src_xyz;
   std::vector<Eigen::Vector3d> tgt_xyz;
-  std::unordered_map<point3D_t, size_t> counts;
+  FlatHashMap<point3D_t, size_t> counts;
   // Associate 3D points using point2D_idx
   for (const auto& src_point3D : src_reconstruction.Points3D()) {
     counts.clear();
@@ -472,13 +475,31 @@ bool MergeReconstructions(const double max_reproj_error,
     return false;
   }
 
-  // Find common and missing images in the two reconstructions.
-  std::unordered_set<image_t> common_image_ids;
+  // Find common and missing images in the two reconstructions. Images are
+  // matched by image id, which assumes that both reconstructions share a
+  // consistent image_id<->name mapping (i.e. were derived from the same
+  // database). If this assumption is violated -- e.g. the reconstructions were
+  // built from independent databases that both number their images 1..N -- then
+  // distinct physical images end up with colliding ids. Detect the
+  // inconsistency via the image name and fail loudly instead.
+  FlatHashSet<image_t> common_image_ids;
   common_image_ids.reserve(src_reconstruction.NumRegImages());
-  std::unordered_set<image_t> missing_image_ids;
+  FlatHashSet<image_t> missing_image_ids;
   missing_image_ids.reserve(src_reconstruction.NumRegImages());
   for (const image_t image_id : src_reconstruction.RegImageIds()) {
     if (tgt_reconstruction.ExistsImage(image_id)) {
+      const std::string& src_name = src_reconstruction.Image(image_id).Name();
+      const std::string& tgt_name = tgt_reconstruction.Image(image_id).Name();
+      if (src_name != tgt_name) {
+        LOG(ERROR)
+            << "Cannot merge reconstructions: image_id=" << image_id
+            << " refers to \"" << src_name
+            << "\" in the source reconstruction but \"" << tgt_name
+            << "\" in the target. MergeReconstructions requires both "
+            << "reconstructions to share a consistent image_id<->name mapping "
+            << "(i.e., be derived from the same database).";
+        return false;
+      }
       common_image_ids.insert(image_id);
     } else {
       missing_image_ids.insert(image_id);
@@ -502,7 +523,7 @@ bool MergeReconstructions(const double max_reproj_error,
   for (const auto& [_, point3D] : src_reconstruction.Points3D()) {
     Track new_track;
     Track old_track;
-    std::unordered_set<point3D_t> old_point3D_ids;
+    FlatHashSet<point3D_t> old_point3D_ids;
     for (const auto& track_el : point3D.track.Elements()) {
       if (common_image_ids.count(track_el.image_id) > 0) {
         const auto& point2D = tgt_reconstruction.Image(track_el.image_id)
@@ -538,8 +559,7 @@ bool MergeReconstructions(const double max_reproj_error,
 }
 
 bool AlignReconstructionToOrigRigScales(
-    const std::unordered_map<rig_t, Rig>& orig_rigs,
-    Reconstruction* reconstruction) {
+    const NodeHashMap<rig_t, Rig>& orig_rigs, Reconstruction* reconstruction) {
   double scale_sum = 0;
   int scale_count = 0;
   for (const auto& [rig_id, orig_rig] : orig_rigs) {
@@ -552,14 +572,15 @@ bool AlignReconstructionToOrigRigScales(
 
       // Here we do not include rigs that are panoramic.
       double sensor_from_orig_rig_norm =
-          sensor_from_orig_rig->translation.norm();
+          sensor_from_orig_rig->translation().norm();
       if (sensor_from_orig_rig_norm < 1e-6) {
         continue;
       }
       THROW_CHECK(reconstruction->Rig(rig_id).HasSensorFromRig(sensor_id));
       double scale = reconstruction->Rig(rig_id)
                          .SensorFromRig(sensor_id)
-                         .translation.norm() /
+                         .translation()
+                         .norm() /
                      sensor_from_orig_rig_norm;
       scale_sum_rig += scale;
       ++scale_count_rig;
@@ -573,9 +594,45 @@ bool AlignReconstructionToOrigRigScales(
     return false;
   }
   Sim3d new_from_old_world;
-  new_from_old_world.scale = scale_count / scale_sum;
+  new_from_old_world.scale() = scale_count / scale_sum;
   reconstruction->Transform(new_from_old_world);
   return true;
+}
+
+AlignmentErrorSummary AlignmentErrorSummary::Compute(
+    const std::vector<ImageAlignmentError>& errors) {
+  AlignmentErrorSummary summary;
+  if (errors.empty()) {
+    return summary;
+  }
+
+  std::vector<double> rotation_errors_deg;
+  rotation_errors_deg.reserve(errors.size());
+  std::vector<double> proj_center_errors;
+  proj_center_errors.reserve(errors.size());
+
+  for (const auto& error : errors) {
+    rotation_errors_deg.push_back(error.rotation_error_deg);
+    proj_center_errors.push_back(error.proj_center_error);
+  }
+
+  auto ComputeStatistics = [](std::vector<double>& values) {
+    Statistics stats;
+    if (values.empty()) {
+      return stats;
+    }
+    stats.min = Percentile(values, 0);
+    stats.max = Percentile(values, 100);
+    stats.mean = Mean(values);
+    stats.median = Median(values);
+    stats.p90 = Percentile(values, 90);
+    stats.p99 = Percentile(values, 99);
+    return stats;
+  };
+
+  summary.rotation_errors_deg = ComputeStatistics(rotation_errors_deg);
+  summary.proj_center_errors = ComputeStatistics(proj_center_errors);
+  return summary;
 }
 
 }  // namespace colmap

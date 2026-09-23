@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/optim/least_absolute_deviations.h"
 
@@ -210,7 +183,7 @@ TEST_P(ParameterizedLeastAbsoluteDeviationsTests, IdentityMatrix) {
   solver.Solve(b, &x);
 
   // Solution should be exactly b for identity matrix
-  EXPECT_LE((x - b).norm(), 1e-3);
+  EXPECT_THAT(x, EigenMatrixNear(b, 1e-3));
 }
 
 TEST_P(ParameterizedLeastAbsoluteDeviationsTests, ScaledIdentityMatrix) {
@@ -233,7 +206,7 @@ TEST_P(ParameterizedLeastAbsoluteDeviationsTests, ScaledIdentityMatrix) {
 
   // Solution should be b / scale
   Eigen::VectorXd expected = b / scale;
-  EXPECT_LE((x - expected).norm(), 1e-3);
+  EXPECT_THAT(x, EigenMatrixNear(expected, 1e-3));
 }
 
 TEST_P(ParameterizedLeastAbsoluteDeviationsTests, ToleranceSettings) {
@@ -286,6 +259,46 @@ TEST_P(ParameterizedLeastAbsoluteDeviationsTests, ToleranceSettings) {
   const double residual1 = (A * x1 - b).lpNorm<1>();
   const double residual2 = (A * x2 - b).lpNorm<1>();
   EXPECT_LT(residual2, 0.99 * residual1);
+}
+
+TEST_P(ParameterizedLeastAbsoluteDeviationsTests, RidgeRegularization) {
+  // Singular matrix (rank 1, two identical columns) makes A^T A not positive
+  // definite. With ridge regularization, the solver still factorizes A^T A
+  // and Solve returns a finite solution (no NaN). Without regularization, the
+  // solver should detect failure and return false.
+  Eigen::SparseMatrix<double> A(3, 2);
+  A.insert(0, 0) = 1.0;
+  A.insert(0, 1) = 1.0;
+  A.insert(1, 0) = 2.0;
+  A.insert(1, 1) = 2.0;
+  A.insert(2, 0) = 3.0;
+  A.insert(2, 1) = 3.0;
+
+  Eigen::VectorXd b(3);
+  b << 2.0, 4.0, 6.0;
+
+  // Without regularization, the singular A^T A is not factorizable.
+  {
+    LeastAbsoluteDeviationSolver::Options options = GetOptions();
+    LeastAbsoluteDeviationSolver solver(options, A);
+    EXPECT_FALSE(solver.Valid());
+    Eigen::VectorXd x = Eigen::VectorXd::Zero(2);
+    EXPECT_FALSE(solver.Solve(b, &x));
+  }
+
+  // With regularization, factorization succeeds and Solve returns a finite
+  // (non-NaN) solution.
+  {
+    LeastAbsoluteDeviationSolver::Options options = GetOptions();
+    options.ridge_regularization = 1e-9;
+    LeastAbsoluteDeviationSolver solver(options, A);
+    EXPECT_TRUE(solver.Valid());
+    Eigen::VectorXd x = Eigen::VectorXd::Zero(2);
+    EXPECT_TRUE(solver.Solve(b, &x));
+    EXPECT_FALSE(x.array().isNaN().any());
+    // Either column achieves residual ~ 0 since b lies in span(A.col(0)).
+    EXPECT_LE((A * x - b).lpNorm<1>(), 1e-3);
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include <pybind11/pybind11.h>
 
 namespace py = pybind11;
@@ -16,6 +18,7 @@ void BindHomographyMatrixEstimator(py::module& m);
 void BindSimilarityTransformEstimator(py::module& m);
 void BindTriangulationEstimator(py::module& m);
 void BindTwoViewGeometryEstimator(py::module& m);
+void BindMotionAveraging(py::module& m);
 
 void BindEstimators(py::module& m) {
   BindCeres(m);
@@ -32,4 +35,5 @@ void BindEstimators(py::module& m) {
   BindSimilarityTransformEstimator(m);
   BindTriangulationEstimator(m);
   BindTwoViewGeometryEstimator(m);
+  BindMotionAveraging(m);
 }

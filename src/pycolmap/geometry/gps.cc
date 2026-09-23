@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include "colmap/geometry/gps.h"
 
 #include "colmap/util/logging.h"
@@ -14,11 +16,11 @@ using namespace pybind11::literals;
 namespace py = pybind11;
 
 void BindGPS(py::module& m) {
-  py::enum_<GPSTransform::Ellipsoid> PyGPSTransfromEllipsoid(
-      m, "GPSTransfromEllipsoid");
-  PyGPSTransfromEllipsoid.value("GRS80", GPSTransform::Ellipsoid::GRS80)
+  py::enum_<GPSTransform::Ellipsoid> PyGPSTransformEllipsoid(
+      m, "GPSTransformEllipsoid");
+  PyGPSTransformEllipsoid.value("GRS80", GPSTransform::Ellipsoid::GRS80)
       .value("WGS84", GPSTransform::Ellipsoid::WGS84);
-  AddStringToEnumConstructor(PyGPSTransfromEllipsoid);
+  AddStringToEnumConstructor(PyGPSTransformEllipsoid);
 
   py::classh_ext<GPSTransform> PyGPSTransform(m, "GPSTransform");
   PyGPSTransform
@@ -30,12 +32,12 @@ void BindGPS(py::module& m) {
            &GPSTransform::EllipsoidToENU,
            "lat_lon_alt"_a,
            "ref_lat"_a,
-           "ref_lon"_a)
+           "ref_lon"_a,
+           "ref_alt"_a)
       .def("ecef_to_enu",
            &GPSTransform::ECEFToENU,
            "xyz_in_ecef"_a,
-           "ref_lat"_a,
-           "ref_lon"_a)
+           "ref_ecef"_a)
       .def("enu_to_ellipsoid",
            &GPSTransform::ENUToEllipsoid,
            "xyz_in_enu"_a,

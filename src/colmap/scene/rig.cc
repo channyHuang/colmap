@@ -1,35 +1,10 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/scene/rig.h"
 
 #include "colmap/geometry/pose.h"
+#include "colmap/util/hash_containers.h"
+#include "colmap/util/string.h"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -49,9 +24,8 @@ void UpdateRigAndCameraCalibsFromReconstruction(
         frame_name_to_images,
     Rig& rig,
     Database& database) {
-  std::unordered_map<
-      camera_t,
-      std::pair<std::vector<Eigen::Quaterniond>, Eigen::Vector3d>>
+  NodeHashMap<camera_t,
+              std::pair<std::vector<Eigen::Quaterniond>, Eigen::Vector3d>>
       rig_from_cams;
   std::set<camera_t> updated_cameras;
   for (auto& [_, images] : frame_name_to_images) {
@@ -96,11 +70,11 @@ void UpdateRigAndCameraCalibsFromReconstruction(
           database.UpdateCamera(camera);
         }
         if (rig_from_cam_rotations.empty()) {
-          rig_from_cam_translation = rig_from_cam.translation;
+          rig_from_cam_translation = rig_from_cam.translation();
         } else {
-          rig_from_cam_translation += rig_from_cam.translation;
+          rig_from_cam_translation += rig_from_cam.translation();
         }
-        rig_from_cam_rotations.push_back(rig_from_cam.rotation);
+        rig_from_cam_rotations.push_back(rig_from_cam.rotation());
       }
     }
   }
@@ -138,17 +112,17 @@ void UpdateRigsAndFramesFromDatabase(const Database& database,
                                      Reconstruction* reconstruction) {
   const std::vector<Frame> database_frames = database.ReadAllFrames();
 
-  std::unordered_map<rig_t, Rig> database_rigs;
+  NodeHashMap<rig_t, Rig> database_rigs;
   database_rigs.reserve(database.NumRigs());
   for (auto& rig : database.ReadAllRigs()) {
     database_rigs.emplace(rig.RigId(), std::move(rig));
   }
 
-  std::unordered_map<rig_t, Rig> reconstruction_rigs;
+  NodeHashMap<rig_t, Rig> reconstruction_rigs;
   reconstruction_rigs.reserve(database_rigs.size());
 
   // Create O(1) lookup table from image names to images.
-  std::unordered_map<std::string, const Image*> image_name_to_image;
+  NodeHashMap<std::string, const Image*> image_name_to_image;
   image_name_to_image.reserve(reconstruction->NumImages());
   for (const auto& [_, image] : reconstruction->Images()) {
     image_name_to_image.emplace(image.Name(), &image);
@@ -213,7 +187,7 @@ void UpdateRigsAndFramesFromDatabase(const Database& database,
   });
 
   // Update reconstruction frames.
-  std::unordered_map<frame_t, Frame> reconstruction_frames;
+  NodeHashMap<frame_t, Frame> reconstruction_frames;
   reconstruction_frames.reserve(database_frames.size());
   visit_frame_data([&](const Frame& database_frame,
                        const Image& database_image,
@@ -226,10 +200,15 @@ void UpdateRigsAndFramesFromDatabase(const Database& database,
     reconstruction_frame.SetRigId(database_frame.RigId());
     reconstruction_frame.AddDataId(reconstruction_image.DataId());
     if (reconstruction_image.HasPose()) {
+      // Images grouped into one rig frame may have independently estimated,
+      // slightly inconsistent poses. The reference sensor directly defines
+      // the shared rig pose, so prefer it over poses derived from other sensors
+      // using the averaged sensor_from_rig calibration. If the reference image
+      // has no pose, keep the first available non-reference pose as a fallback.
       if (database_rig.IsRefSensor(database_sensor_id)) {
         reconstruction_frame.SetRigFromWorld(
             reconstruction_image.CamFromWorld());
-      } else {
+      } else if (!reconstruction_frame.HasPose()) {
         reconstruction_frame.SetRigFromWorld(
             Inverse(database_rig.SensorFromRig(database_sensor_id)) *
             reconstruction_image.CamFromWorld());
@@ -252,11 +231,18 @@ void UpdateRigsAndFramesFromDatabase(const Database& database,
   reconstruction->SetRigsAndFrames(std::move(rigs), std::move(frames));
 }
 
+void CopyCameraIntrinsics(const Camera& src, Camera& dst) {
+  dst.model_id = src.model_id;
+  dst.params = src.params;
+  dst.has_prior_focal_length = src.has_prior_focal_length;
+}
+
 }  // namespace
 
-std::vector<RigConfig> ReadRigConfig(const std::string& rig_config_path) {
+std::vector<RigConfig> ReadRigConfig(
+    const std::filesystem::path& rig_config_path) {
   boost::property_tree::ptree pt;
-  boost::property_tree::read_json(rig_config_path.c_str(), pt);
+  boost::property_tree::read_json(rig_config_path.string().c_str(), pt);
 
   std::vector<RigConfig> configs;
   for (const auto& rig_node : pt) {
@@ -278,17 +264,21 @@ std::vector<RigConfig> ReadRigConfig(const std::string& rig_config_path) {
         int index = 0;
         Eigen::Vector4d cam_from_rig_wxyz;
         for (const auto& node : cam_from_rig_rotation_node.get()) {
-          cam_from_rig_wxyz[index++] = node.second.get_value<double>();
+          // Note: get_value<double>() is locale-dependent, so parse the raw
+          // token with the locale-independent StringToDouble instead.
+          cam_from_rig_wxyz[index++] =
+              StringToDouble(node.second.get_value<std::string>());
         }
-        cam_from_rig.rotation = Eigen::Quaterniond(cam_from_rig_wxyz(0),
-                                                   cam_from_rig_wxyz(1),
-                                                   cam_from_rig_wxyz(2),
-                                                   cam_from_rig_wxyz(3));
+        cam_from_rig.rotation() = Eigen::Quaterniond(cam_from_rig_wxyz(0),
+                                                     cam_from_rig_wxyz(1),
+                                                     cam_from_rig_wxyz(2),
+                                                     cam_from_rig_wxyz(3));
 
         THROW_CHECK(cam_from_rig_translation_node);
         index = 0;
         for (const auto& node : cam_from_rig_translation_node.get()) {
-          cam_from_rig.translation(index++) = node.second.get_value<double>();
+          cam_from_rig.translation()(index++) =
+              StringToDouble(node.second.get_value<std::string>());
         }
         config_camera.cam_from_rig = cam_from_rig;
       }
@@ -315,7 +305,7 @@ std::vector<RigConfig> ReadRigConfig(const std::string& rig_config_path) {
         config_camera.camera->has_prior_focal_length = true;
         for (const auto& node : camera_params_node.get()) {
           config_camera.camera->params.push_back(
-              node.second.get_value<double>());
+              StringToDouble(node.second.get_value<std::string>()));
         }
       }
     }
@@ -361,14 +351,13 @@ void ApplyRigConfig(const std::vector<RigConfig>& configs,
             camera_id = image.CameraId();
             if (config_camera.camera.has_value()) {
               Camera database_camera = database.ReadCamera(image.CameraId());
-              database_camera.model_id = config_camera.camera->model_id;
-              database_camera.params = config_camera.camera->params;
+              CopyCameraIntrinsics(*config_camera.camera, database_camera);
               database.UpdateCamera(database_camera);
               if (reconstruction != nullptr) {
                 auto& reconstruction_camera =
                     reconstruction->Camera(image.CameraId());
-                reconstruction_camera.model_id = config_camera.camera->model_id;
-                reconstruction_camera.params = config_camera.camera->params;
+                CopyCameraIntrinsics(*config_camera.camera,
+                                     reconstruction_camera);
               }
             }
           }
@@ -421,7 +410,7 @@ void ApplyRigConfig(const std::vector<RigConfig>& configs,
 
   // Create trivial rigs/frames for images without configuration.
   // This is necessary because we clear rigs/frames above.
-  std::unordered_map<camera_t, rig_t> camera_to_rig_id;
+  NodeHashMap<camera_t, rig_t> camera_to_rig_id;
   for (const Image& image : images) {
     if (configured_image_ids.count(image.ImageId()) > 0) {
       continue;

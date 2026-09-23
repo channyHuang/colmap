@@ -1,42 +1,15 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #pragma once
 
 #include "colmap/feature/types.h"
 #include "colmap/optim/ransac.h"
 #include "colmap/scene/camera.h"
+#include "colmap/scene/database_cache.h"
 #include "colmap/scene/image.h"
-#include "colmap/scene/rig.h"
 #include "colmap/scene/two_view_geometry.h"
+#include "colmap/util/hash_containers.h"
 
-#include <unordered_map>
 #include <vector>
 
 namespace colmap {
@@ -45,6 +18,10 @@ namespace colmap {
 struct TwoViewGeometryOptions {
   // Minimum number of inliers for non-degenerate two-view geometry.
   int min_num_inliers = 15;
+
+  // Minimum ratio of inliers to total matches for non-degenerate geometry.
+  // Disabled by default, only effective when > 0.
+  double min_inlier_ratio = 0.0;
 
   // In case both cameras are calibrated, the calibration is verified by
   // estimating an essential and fundamental matrix and comparing their
@@ -93,6 +70,17 @@ struct TwoViewGeometryOptions {
   // In case the user asks for it, only going to estimate a Homography
   // between both cameras.
   bool force_H_use = false;
+
+  // Use DEGENSAC (Chum et al., CVPR 2005) for the fundamental matrix instead of
+  // plain LO-RANSAC, making estimation robust to a dominant scene plane.
+  bool use_degensac = false;
+
+  // Locally optimize the fundamental matrix by nonlinearly minimizing the
+  // Sampson error over the inlier set, instead of refitting the linear
+  // eight-point algorithm. The refinement optimizes the same residual RANSAC
+  // scores and keeps the model rank 2 throughout, so no singular value has to
+  // be truncated afterwards. On by default.
+  bool use_sampson_refinement = true;
 
   // Whether to compute the relative pose between the two views.
   bool compute_relative_pose = false;
@@ -154,8 +142,8 @@ std::vector<std::pair<std::pair<image_t, image_t>, TwoViewGeometry>>
 EstimateRigTwoViewGeometries(
     const Rig& rig1,
     const Rig& rig2,
-    const std::unordered_map<image_t, Image>& images,
-    const std::unordered_map<camera_t, Camera>& cameras,
+    const NodeHashMap<image_t, Image>& images,
+    const NodeHashMap<camera_t, Camera>& cameras,
     const std::vector<std::pair<std::pair<image_t, image_t>, FeatureMatches>>&
         matches,
     const TwoViewGeometryOptions& options);
@@ -166,7 +154,6 @@ EstimateRigTwoViewGeometries(
 // @param points1         Feature points in first image.
 // @param camera2         Camera of second image.
 // @param points2         Feature points in second image.
-// @param matches         Feature matches between first and second image.
 // @param options         Two-view geometry estimation options.
 bool EstimateTwoViewGeometryPose(const Camera& camera1,
                                  const std::vector<Eigen::Vector2d>& points1,
@@ -183,6 +170,65 @@ bool EstimateTwoViewGeometryPose(const Camera& camera1,
 // @param matches         Feature matches between first and second image.
 // @param options         Two-view geometry estimation options.
 TwoViewGeometry EstimateCalibratedTwoViewGeometry(
+    const Camera& camera1,
+    const std::vector<Eigen::Vector2d>& points1,
+    const Camera& camera2,
+    const std::vector<Eigen::Vector2d>& points2,
+    const FeatureMatches& matches,
+    const TwoViewGeometryOptions& options);
+
+// Estimate two-view geometry from an image pair captured by a single,
+// uncalibrated camera with an unknown but shared focal length.
+//
+// Runs PoseLib's 6-point shared-focal relative-pose solver (with nonlinear
+// local optimization) against a homography model to reject planar/panoramic
+// degeneracies. On success the returned geometry has the UNCALIBRATED
+// configuration with `E`, `F`, and the estimated shared camera in
+// `camera1`/`camera2` set.
+//
+// Both images are assumed to reference the same pinhole-projection camera
+// (perspective, non-fisheye); `camera` is that shared camera and provides the
+// principal point. A single isotropic focal length is recovered; multi-focal
+// models (e.g. PINHOLE) are seeded fx = fy = f and refined later. Any current
+// distortion is ignored by the epipolar fit (as in the fundamental-matrix path)
+// and refined later by bundle adjustment.
+//
+// @param camera          Shared camera of both images.
+// @param points1         Feature points in first image.
+// @param points2         Feature points in second image.
+// @param matches         Feature matches between first and second image.
+// @param options         Two-view geometry estimation options.
+TwoViewGeometry EstimateSharedFocalTwoViewGeometry(
+    const Camera& camera,
+    const std::vector<Eigen::Vector2d>& points1,
+    const std::vector<Eigen::Vector2d>& points2,
+    const FeatureMatches& matches,
+    const TwoViewGeometryOptions& options);
+
+// Estimate two-view geometry when exactly one of the two cameras has a known
+// focal length, by jointly recovering the relative pose and the other camera's
+// focal (LO-RANSAC over a minimal 6-point one-sided focal solver) against a
+// homography model to reject planar/panoramic degeneracies.
+//
+// When the epipolar model wins, the geometry has the UNCALIBRATED configuration
+// with `E` and `F` set, and the estimated camera in whichever of
+// `camera1`/`camera2` is the uncalibrated image; the other stays unset, its
+// intrinsics being an input rather than an estimate.
+//
+// Exactly one of `camera1`/`camera2` must have `has_prior_focal_length` set,
+// and the uncalibrated one must use a pinhole projection. A single isotropic
+// focal is recovered; multi-focal models are seeded fx = fy = f and refined
+// later. Distortion on the uncalibrated side is absorbed by the epipolar fit,
+// as in the fundamental-matrix path; on the calibrated side it is undone
+// exactly.
+//
+// @param camera1         Camera of first image.
+// @param points1         Feature points in first image.
+// @param camera2         Camera of second image.
+// @param points2         Feature points in second image.
+// @param matches         Feature matches between first and second image.
+// @param options         Two-view geometry estimation options.
+TwoViewGeometry EstimateOneSidedFocalTwoViewGeometry(
     const Camera& camera1,
     const std::vector<Eigen::Vector2d>& points1,
     const Camera& camera2,
@@ -217,5 +263,11 @@ TwoViewGeometry TwoViewGeometryFromKnownRelativePose(
     const FeatureMatches& matches,
     int min_num_inliers = 15,
     double max_error = 4.0);
+
+// Decompose relative poses from two-view geometries in the database cache and
+// update the results in-memory. Skips pairs that already have a relative
+// pose or have invalid two-view geometries (UNDEFINED, DEGENERATE, WATERMARK,
+// MULTIPLE).
+void MaybeDecomposeRelativePoses(DatabaseCache* database_cache);
 
 }  // namespace colmap

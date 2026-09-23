@@ -1,37 +1,11 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/geometry/normalization.h"
 
 #include "colmap/util/logging.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace colmap {
 
@@ -86,6 +60,39 @@ std::pair<Eigen::AlignedBox3d, Eigen::Vector3d> ComputeBoundingBoxAndCentroid(
   }
 
   return std::make_pair(Eigen::AlignedBox3d(bbox_min, bbox_max), centroid);
+}
+
+void CenterAndNormalizeImagePoints(const std::vector<Eigen::Vector2d>& points,
+                                   std::vector<Eigen::Vector2d>* normed_points,
+                                   Eigen::Matrix3d* normed_from_orig) {
+  const size_t num_points = points.size();
+  THROW_CHECK_GT(num_points, 0);
+
+  // Calculate centroid.
+  Eigen::Vector2d centroid(0, 0);
+  for (const Eigen::Vector2d& point : points) {
+    centroid += point;
+  }
+  centroid /= num_points;
+
+  // Root mean square distance to centroid of all points.
+  double rms_mean_dist = 0;
+  for (const Eigen::Vector2d& point : points) {
+    rms_mean_dist += (point - centroid).squaredNorm();
+  }
+  rms_mean_dist = std::sqrt(rms_mean_dist / num_points);
+
+  // Compose normalization matrix.
+  const double norm_factor = std::sqrt(2.0) / rms_mean_dist;
+  *normed_from_orig << norm_factor, 0, -norm_factor * centroid(0), 0,
+      norm_factor, -norm_factor * centroid(1), 0, 0, 1;
+
+  // Apply normalization matrix.
+  normed_points->resize(num_points);
+  for (size_t i = 0; i < num_points; ++i) {
+    (*normed_points)[i] =
+        (*normed_from_orig * points[i].homogeneous()).hnormalized();
+  }
 }
 
 }  // namespace colmap

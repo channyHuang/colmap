@@ -1,44 +1,32 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/ui/main_window.h"
 
+#include "colmap/controllers/global_pipeline.h"
+#include "colmap/controllers/hierarchical_pipeline.h"
 #include "colmap/scene/reconstruction_io.h"
+#include "colmap/sensor/bitmap.h"
+#include "colmap/ui/qt_utils.h"
+#include "colmap/ui/render_options.h"
 #include "colmap/util/logging.h"
+#include "colmap/util/ply.h"
 #include "colmap/util/version.h"
 
+#include <QApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QIcon>
+#include <QPainter>
+#include <QPixmap>
 #include <QSettings>
 #include <QStandardPaths>
 #include <clocale>
 
+#include <QtSvg/QSvgRenderer>
+
+static void InitUiResources() { Q_INIT_RESOURCE(resources); }
+
+namespace colmap {
 namespace {
 
 // Keys used with QSettings to persist last-used directories for different
@@ -54,6 +42,30 @@ constexpr char kLastGrabImage[] =
 
 // Get proper QSettings
 QSettings GetQSettings() { return QSettings("Colmap", "ColmapUI"); }
+
+QIcon CreateApplicationIcon() {
+  const QString logo_path = QStringLiteral(":/media/colmap-logo.svg");
+#ifdef Q_OS_MACOS
+  // Match the macOS app icon grid, where the artwork occupies roughly 80% of
+  // the full canvas instead of extending all the way to its edges.
+  constexpr int kCanvasSize = 1024;
+  constexpr int kArtworkInset = 100;
+  QPixmap icon_pixmap(kCanvasSize, kCanvasSize);
+  icon_pixmap.fill(Qt::transparent);
+
+  QSvgRenderer logo_renderer(logo_path);
+  QPainter logo_painter(&icon_pixmap);
+  logo_renderer.render(&logo_painter,
+                       QRectF(kArtworkInset,
+                              kArtworkInset,
+                              kCanvasSize - 2 * kArtworkInset,
+                              kCanvasSize - 2 * kArtworkInset));
+  logo_painter.end();
+  return QIcon(icon_pixmap);
+#else
+  return QIcon(logo_path);
+#endif
+}
 
 // Default fallback: Documents (or home).
 QString DefaultBaseDir() {
@@ -93,18 +105,78 @@ void SetLastOpen(const QString& key, const QString& pathOrDir) {
   s.endGroup();
 }
 
+std::string GetLogTarget() {
+  if (FLAGS_logtostderr) {
+    return "stderr";
+  }
+
+#if COLMAP_GLOG_HAS_STDOUT_SUPPORT
+  if (FLAGS_logtostdout) {
+    return "stdout";
+  }
+#endif
+
+  if (FLAGS_alsologtostderr) {
+    return "stderr_and_file";
+  }
+
+  return "file";
+}
+
+void ApplyLogOptions(const std::string& log_target,
+                     int verbosity,
+                     int min_severity,
+                     bool color) {
+  FLAGS_v = verbosity;
+  FLAGS_minloglevel = min_severity;
+
+#if COLMAP_GLOG_HAS_COLOR_SUPPORT
+  FLAGS_colorlogtostderr = color;
+#endif
+
+  FLAGS_logtostderr = false;
+#if COLMAP_GLOG_HAS_STDOUT_SUPPORT
+  FLAGS_logtostdout = false;
+#endif
+  FLAGS_alsologtostderr = false;
+
+  if (log_target == "stderr") {
+    FLAGS_logtostderr = true;
+  } else if (log_target == "stdout") {
+#if COLMAP_GLOG_HAS_STDOUT_SUPPORT
+    FLAGS_logtostdout = true;
+#else
+    LOG(WARNING) << "log_target=stdout requires glog >= 0.6. "
+                    "Falling back to stderr.";
+    FLAGS_logtostderr = true;
+#endif
+  } else if (log_target == "file") {
+    // default file logging
+  } else if (log_target == "stderr_and_file") {
+    FLAGS_alsologtostderr = true;
+  } else {
+    LOG(ERROR) << "Invalid log_target: " << log_target
+               << ". Falling back to stderr_and_file.";
+    FLAGS_alsologtostderr = true;
+  }
+
+#if COLMAP_GLOG_HAS_STDOUT_SUPPORT
+  FLAGS_colorlogtostdout = FLAGS_colorlogtostderr;
+#endif
+}
+
 }  // anonymous namespace
 
-static void InitUiResources() { Q_INIT_RESOURCE(resources); }
-
-namespace colmap {
-
-MainWindow::MainWindow(const OptionManager& options)
-    : options_(options),
+MainWindow::MainWindow(OptionManager options)
+    : options_(std::move(options)),
       reconstruction_manager_(std::make_shared<ReconstructionManager>()),
       thread_control_widget_(new ThreadControlWidget(this)),
       window_closed_(false) {
   InitUiResources();
+
+  const QIcon app_icon = CreateApplicationIcon();
+  setWindowIcon(app_icon);
+  QApplication::setWindowIcon(app_icon);
 
   // NOLINTNEXTLINE(concurrency-mt-unsafe)
   std::setlocale(LC_NUMERIC, "C");
@@ -119,36 +191,38 @@ MainWindow::MainWindow(const OptionManager& options)
   CreateMenus();
   CreateToolbar();
   CreateStatusbar();
-  CreateControllers();
+  // The mapper controller (and its database cache) is created lazily when a
+  // reconstruction is actually started, so opening the GUI does not read the
+  // database. Just initialize the control states here.
+  UpdateMapperControls();
 
   ShowLog();
 
   options_.AddAllOptions();
 }
 
-void MainWindow::ImportReconstruction(const std::string& import_path) {
+void MainWindow::ImportReconstruction(
+    const std::filesystem::path& import_path) {
   if (import_path.empty()) {
     return;
   }
 
-  SetLastOpen(kLastImportExport, QString::fromStdString(import_path));
+  SetLastOpen(kLastImportExport, QString::fromStdString(import_path.string()));
 
-  const std::string project_path = JoinPaths(import_path, "project.ini");
+  const std::filesystem::path project_path = import_path / "project.ini";
 
-  const std::string cameras_bin_path = JoinPaths(import_path, "cameras.bin");
-  const std::string images_bin_path = JoinPaths(import_path, "images.bin");
-  const std::string points3D_bin_path = JoinPaths(import_path, "points3D.bin");
-  const std::string cameras_txt_path = JoinPaths(import_path, "cameras.txt");
-  const std::string images_txt_path = JoinPaths(import_path, "images.txt");
-  const std::string points3D_txt_path = JoinPaths(import_path, "points3D.txt");
+  const std::filesystem::path cameras_bin_path = import_path / "cameras.bin";
+  const std::filesystem::path images_bin_path = import_path / "images.bin";
+  const std::filesystem::path points3D_bin_path = import_path / "points3D.bin";
+  const std::filesystem::path cameras_txt_path = import_path / "cameras.txt";
+  const std::filesystem::path images_txt_path = import_path / "images.txt";
+  const std::filesystem::path points3D_txt_path = import_path / "points3D.txt";
 
   const bool is_valid_reconstruction_dir =
-      (colmap::ExistsFile(cameras_bin_path) &&
-       colmap::ExistsFile(images_bin_path) &&
-       colmap::ExistsFile(points3D_bin_path)) ||
-      (colmap::ExistsFile(cameras_txt_path) &&
-       colmap::ExistsFile(images_txt_path) &&
-       colmap::ExistsFile(points3D_txt_path));
+      (ExistsFile(cameras_bin_path) && ExistsFile(images_bin_path) &&
+       ExistsFile(points3D_bin_path)) ||
+      (ExistsFile(cameras_txt_path) && ExistsFile(images_txt_path) &&
+       ExistsFile(points3D_txt_path));
   if (!is_valid_reconstruction_dir) {
     QMessageBox::critical(this,
                           "",
@@ -197,7 +271,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     return;
   }
 
-  if (project_widget_->IsValid() && *options_.project_path == "") {
+  if (project_widget_->IsValid() && options_.project_path->empty()) {
     // Project was created, but not yet saved
     QMessageBox::StandardButton reply;
     reply = QMessageBox::question(
@@ -231,11 +305,11 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
-  const QMimeData* mime_data = event->mimeData();
-  if (mime_data->hasUrls()) {
-    return event->acceptProposedAction();
-  }
-  event->ignore();
+  HandleDragEvent(event);
+}
+
+void MainWindow::dragMoveEvent(QDragMoveEvent* event) {
+  HandleDragEvent(event);
 }
 
 void MainWindow::dropEvent(QDropEvent* event) {
@@ -257,7 +331,23 @@ void MainWindow::dropEvent(QDropEvent* event) {
     }
   }
 
-  ImportReconstruction(mime_data->urls().first().toLocalFile().toStdString());
+  const std::string drop_path =
+      mime_data->urls().first().toLocalFile().toStdString();
+
+  try {
+    if (QFileInfo(QString::fromStdString(drop_path)).isDir()) {
+      ImportReconstruction(drop_path);
+    } else if (QFileInfo(QString::fromStdString(drop_path))
+                   .suffix()
+                   .compare("ply", Qt::CaseInsensitive) == 0) {
+      ImportFrom(drop_path);
+    } else {
+      QMessageBox::critical(
+          this, "", tr("Unsupported file type. Only PLY files are supported."));
+    }
+  } catch (const std::exception& e) {
+    QMessageBox::critical(this, "", tr("Failed to import: ") + e.what());
+  }
 }
 
 void MainWindow::CreateWidgets() {
@@ -272,8 +362,8 @@ void MainWindow::CreateWidgets() {
   feature_matching_widget_ = new FeatureMatchingWidget(this, &options_);
   database_management_widget_ = new DatabaseManagementWidget(this, &options_);
   automatic_reconstruction_widget_ = new AutomaticReconstructionWidget(this);
-  reconstruction_options_widget_ =
-      new ReconstructionOptionsWidget(this, &options_);
+  reconstruction_options_widget_ = new ReconstructionOptionsWidget(
+      this, &options_, &mapper_type_, [this]() { UpdateMapperControls(); });
   bundle_adjustment_widget_ = new BundleAdjustmentWidget(this, &options_);
   dense_reconstruction_widget_ = new DenseReconstructionWidget(this, &options_);
   render_options_widget_ =
@@ -284,7 +374,6 @@ void MainWindow::CreateWidgets() {
       new ReconstructionManagerWidget(this, reconstruction_manager_);
   reconstruction_stats_widget_ = new ReconstructionStatsWidget(this);
   match_matrix_widget_ = new MatchMatrixWidget(this, &options_);
-  license_widget_ = new LicenseWidget(this);
 
   dock_log_widget_ = new QDockWidget("Log", this);
   dock_log_widget_->setWidget(log_widget_);
@@ -296,37 +385,39 @@ void MainWindow::CreateActions() {
   // File actions
   //////////////////////////////////////////////////////////////////////////////
 
-  action_project_new_ =
-      new QAction(QIcon(":/media/project-new.png"), tr("New project"), this);
+  action_project_new_ = new QAction(
+      ThemedIcon(":/media/project-new.svg"), tr("New project"), this);
   action_project_new_->setShortcuts(QKeySequence::New);
   connect(
       action_project_new_, &QAction::triggered, this, &MainWindow::ProjectNew);
 
-  action_project_open_ =
-      new QAction(QIcon(":/media/project-open.png"), tr("Open project"), this);
+  action_project_open_ = new QAction(
+      ThemedIcon(":/media/project-open.svg"), tr("Open project"), this);
   action_project_open_->setShortcuts(QKeySequence::Open);
   connect(action_project_open_,
           &QAction::triggered,
           this,
           &MainWindow::ProjectOpen);
 
-  action_project_edit_ =
-      new QAction(QIcon(":/media/project-edit.png"), tr("Edit project"), this);
+  action_project_edit_ = new QAction(
+      ThemedIcon(":/media/project-edit.svg"), tr("Edit project"), this);
   connect(action_project_edit_,
           &QAction::triggered,
           this,
           &MainWindow::ProjectEdit);
 
-  action_project_save_ =
-      new QAction(QIcon(":/media/project-save.png"), tr("Save project"), this);
+  action_project_save_ = new QAction(
+      ThemedIcon(":/media/project-save.svg"), tr("Save project"), this);
   action_project_save_->setShortcuts(QKeySequence::Save);
   connect(action_project_save_,
           &QAction::triggered,
           this,
           &MainWindow::ProjectSave);
 
-  action_project_save_as_ = new QAction(
-      QIcon(":/media/project-save-as.png"), tr("Save project as..."), this);
+  action_project_save_as_ =
+      new QAction(ThemedIcon(":/media/project-save-as.svg"),
+                  tr("Save project as..."),
+                  this);
   action_project_save_as_->setShortcuts(QKeySequence::SaveAs);
   connect(action_project_save_as_,
           &QAction::triggered,
@@ -334,34 +425,39 @@ void MainWindow::CreateActions() {
           &MainWindow::ProjectSaveAs);
 
   action_import_ =
-      new QAction(QIcon(":/media/import.png"), tr("Import model"), this);
+      new QAction(ThemedIcon(":/media/import.svg"), tr("Import model"), this);
+  action_import_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_I));
   connect(action_import_, &QAction::triggered, this, &MainWindow::Import);
   blocking_actions_.push_back(action_import_);
 
   action_import_from_ = new QAction(
-      QIcon(":/media/import-from.png"), tr("Import model from..."), this);
-  connect(
-      action_import_from_, &QAction::triggered, this, &MainWindow::ImportFrom);
+      ThemedIcon(":/media/import-from.svg"), tr("Import from ..."), this);
+  connect(action_import_from_,
+          &QAction::triggered,
+          this,
+          QOverload<>::of(&MainWindow::ImportFrom));
   blocking_actions_.push_back(action_import_from_);
 
   action_export_ =
-      new QAction(QIcon(":/media/export.png"), tr("Export model"), this);
+      new QAction(ThemedIcon(":/media/export.svg"), tr("Export model"), this);
+  action_export_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
   connect(action_export_, &QAction::triggered, this, &MainWindow::Export);
   blocking_actions_.push_back(action_export_);
 
   action_export_all_ = new QAction(
-      QIcon(":/media/export-all.png"), tr("Export all models"), this);
+      ThemedIcon(":/media/export-all.svg"), tr("Export all models"), this);
   connect(
       action_export_all_, &QAction::triggered, this, &MainWindow::ExportAll);
   blocking_actions_.push_back(action_export_all_);
 
   action_export_as_ = new QAction(
-      QIcon(":/media/export-as.png"), tr("Export model as..."), this);
+      ThemedIcon(":/media/export-as.svg"), tr("Export model as..."), this);
   connect(action_export_as_, &QAction::triggered, this, &MainWindow::ExportAs);
   blocking_actions_.push_back(action_export_as_);
 
-  action_export_as_text_ = new QAction(
-      QIcon(":/media/export-as-text.png"), tr("Export model as text"), this);
+  action_export_as_text_ = new QAction(ThemedIcon(":/media/export-as-text.svg"),
+                                       tr("Export model as text"),
+                                       this);
   connect(action_export_as_text_,
           &QAction::triggered,
           this,
@@ -375,8 +471,10 @@ void MainWindow::CreateActions() {
   // Processing action
   //////////////////////////////////////////////////////////////////////////////
 
-  action_feature_extraction_ = new QAction(
-      QIcon(":/media/feature-extraction.png"), tr("Feature extraction"), this);
+  action_feature_extraction_ =
+      new QAction(ThemedIcon(":/media/feature-extraction.svg"),
+                  tr("Feature extraction"),
+                  this);
   connect(action_feature_extraction_,
           &QAction::triggered,
           this,
@@ -384,7 +482,7 @@ void MainWindow::CreateActions() {
   blocking_actions_.push_back(action_feature_extraction_);
 
   action_feature_matching_ = new QAction(
-      QIcon(":/media/feature-matching.png"), tr("Feature matching"), this);
+      ThemedIcon(":/media/feature-matching.svg"), tr("Feature matching"), this);
   connect(action_feature_matching_,
           &QAction::triggered,
           this,
@@ -392,7 +490,7 @@ void MainWindow::CreateActions() {
   blocking_actions_.push_back(action_feature_matching_);
 
   action_database_management_ =
-      new QAction(QIcon(":/media/database-management.png"),
+      new QAction(ThemedIcon(":/media/database-management.svg"),
                   tr("Database management"),
                   this);
   connect(action_database_management_,
@@ -406,7 +504,7 @@ void MainWindow::CreateActions() {
   //////////////////////////////////////////////////////////////////////////////
 
   action_automatic_reconstruction_ =
-      new QAction(QIcon(":/media/automatic-reconstruction.png"),
+      new QAction(ThemedIcon(":/media/automatic-reconstruction.svg"),
                   tr("Automatic reconstruction"),
                   this);
   connect(action_automatic_reconstruction_,
@@ -415,7 +513,7 @@ void MainWindow::CreateActions() {
           &MainWindow::AutomaticReconstruction);
 
   action_reconstruction_start_ =
-      new QAction(QIcon(":/media/reconstruction-start.png"),
+      new QAction(ThemedIcon(":/media/reconstruction-start.svg"),
                   tr("Start reconstruction"),
                   this);
   connect(action_reconstruction_start_,
@@ -425,7 +523,7 @@ void MainWindow::CreateActions() {
   blocking_actions_.push_back(action_reconstruction_start_);
 
   action_reconstruction_step_ =
-      new QAction(QIcon(":/media/reconstruction-step.png"),
+      new QAction(ThemedIcon(":/media/reconstruction-step.svg"),
                   tr("Reconstruct next image"),
                   this);
   connect(action_reconstruction_step_,
@@ -435,7 +533,7 @@ void MainWindow::CreateActions() {
   blocking_actions_.push_back(action_reconstruction_step_);
 
   action_reconstruction_pause_ =
-      new QAction(QIcon(":/media/reconstruction-pause.png"),
+      new QAction(ThemedIcon(":/media/reconstruction-pause.svg"),
                   tr("Pause reconstruction"),
                   this);
   connect(action_reconstruction_pause_,
@@ -446,7 +544,7 @@ void MainWindow::CreateActions() {
   blocking_actions_.push_back(action_reconstruction_pause_);
 
   action_reconstruction_reset_ =
-      new QAction(QIcon(":/media/reconstruction-reset.png"),
+      new QAction(ThemedIcon(":/media/reconstruction-reset.svg"),
                   tr("Reset reconstruction"),
                   this);
   connect(action_reconstruction_reset_,
@@ -455,7 +553,7 @@ void MainWindow::CreateActions() {
           &MainWindow::ReconstructionOverwrite);
 
   action_reconstruction_normalize_ =
-      new QAction(QIcon(":/media/reconstruction-normalize.png"),
+      new QAction(ThemedIcon(":/media/reconstruction-normalize.svg"),
                   tr("Normalize reconstruction"),
                   this);
   connect(action_reconstruction_normalize_,
@@ -465,7 +563,7 @@ void MainWindow::CreateActions() {
   blocking_actions_.push_back(action_reconstruction_normalize_);
 
   action_reconstruction_options_ =
-      new QAction(QIcon(":/media/reconstruction-options.png"),
+      new QAction(ThemedIcon(":/media/reconstruction-options.svg"),
                   tr("Reconstruction options"),
                   this);
   connect(action_reconstruction_options_,
@@ -474,8 +572,10 @@ void MainWindow::CreateActions() {
           &MainWindow::ReconstructionOptions);
   blocking_actions_.push_back(action_reconstruction_options_);
 
-  action_bundle_adjustment_ = new QAction(
-      QIcon(":/media/bundle-adjustment.png"), tr("Bundle adjustment"), this);
+  action_bundle_adjustment_ =
+      new QAction(ThemedIcon(":/media/bundle-adjustment.svg"),
+                  tr("Bundle adjustment"),
+                  this);
   connect(action_bundle_adjustment_,
           &QAction::triggered,
           this,
@@ -484,7 +584,7 @@ void MainWindow::CreateActions() {
   blocking_actions_.push_back(action_bundle_adjustment_);
 
   action_dense_reconstruction_ =
-      new QAction(QIcon(":/media/dense-reconstruction.png"),
+      new QAction(ThemedIcon(":/media/dense-reconstruction.svg"),
                   tr("Dense reconstruction"),
                   this);
   connect(action_dense_reconstruction_,
@@ -497,21 +597,21 @@ void MainWindow::CreateActions() {
   //////////////////////////////////////////////////////////////////////////////
 
   action_render_toggle_ = new QAction(
-      QIcon(":/media/render-enabled.png"), tr("Disable rendering"), this);
+      ThemedIcon(":/media/render-enabled.svg"), tr("Disable rendering"), this);
   connect(action_render_toggle_,
           &QAction::triggered,
           this,
           &MainWindow::RenderToggle);
 
   action_render_reset_view_ = new QAction(
-      QIcon(":/media/render-reset-view.png"), tr("Reset view"), this);
+      ThemedIcon(":/media/render-reset-view.svg"), tr("Reset view"), this);
   connect(action_render_reset_view_,
           &QAction::triggered,
           model_viewer_widget_,
           &ModelViewerWidget::ResetView);
 
   action_render_options_ = new QAction(
-      QIcon(":/media/render-options.png"), tr("Render options"), this);
+      ThemedIcon(":/media/render-options.svg"), tr("Render options"), this);
   connect(action_render_options_,
           &QAction::triggered,
           this,
@@ -528,7 +628,7 @@ void MainWindow::CreateActions() {
   //////////////////////////////////////////////////////////////////////////////
 
   action_reconstruction_stats_ =
-      new QAction(QIcon(":/media/reconstruction-stats.png"),
+      new QAction(ThemedIcon(":/media/reconstruction-stats.svg"),
                   tr("Show model statistics"),
                   this);
   connect(action_reconstruction_stats_,
@@ -537,30 +637,30 @@ void MainWindow::CreateActions() {
           &MainWindow::ReconstructionStats);
 
   action_match_matrix_ = new QAction(
-      QIcon(":/media/match-matrix.png"), tr("Show match matrix"), this);
+      ThemedIcon(":/media/match-matrix.svg"), tr("Show match matrix"), this);
   connect(action_match_matrix_,
           &QAction::triggered,
           this,
           &MainWindow::MatchMatrix);
 
   action_log_show_ =
-      new QAction(QIcon(":/media/log.png"), tr("Show log"), this);
+      new QAction(ThemedIcon(":/media/log.svg"), tr("Show log"), this);
   connect(action_log_show_, &QAction::triggered, this, &MainWindow::ShowLog);
 
   action_grab_image_ =
-      new QAction(QIcon(":/media/grab-image.png"), tr("Grab image"), this);
+      new QAction(ThemedIcon(":/media/grab-image.svg"), tr("Grab image"), this);
   connect(
       action_grab_image_, &QAction::triggered, this, &MainWindow::GrabImage);
 
   action_grab_movie_ =
-      new QAction(QIcon(":/media/grab-movie.png"), tr("Grab movie"), this);
+      new QAction(ThemedIcon(":/media/grab-movie.svg"), tr("Grab movie"), this);
   connect(action_grab_movie_,
           &QAction::triggered,
           model_viewer_widget_,
           &ModelViewerWidget::GrabMovie);
 
-  action_undistort_ =
-      new QAction(QIcon(":/media/undistort.png"), tr("Undistortion"), this);
+  action_undistort_ = new QAction(
+      ThemedIcon(":/media/undistort.svg"), tr("Undistortion"), this);
   connect(action_undistort_,
           &QAction::triggered,
           this,
@@ -583,11 +683,11 @@ void MainWindow::CreateActions() {
           this,
           &MainWindow::ResetOptions);
 
-  action_set_log_level_ = new QAction(tr("Set log level"), this);
-  connect(action_set_log_level_,
+  action_set_log_options_ = new QAction(tr("Set log options"), this);
+  connect(action_set_log_options_,
           &QAction::triggered,
           this,
-          &MainWindow::SetLogLevel);
+          &MainWindow::SetLogOptions);
 
   //////////////////////////////////////////////////////////////////////////////
   // Misc actions
@@ -626,8 +726,7 @@ void MainWindow::CreateActions() {
   action_support_ = new QAction(tr("Support"), this);
   connect(action_support_, &QAction::triggered, this, &MainWindow::Support);
   action_license_ = new QAction(tr("License"), this);
-  connect(
-      action_license_, &QAction::triggered, license_widget_, &QTextEdit::show);
+  connect(action_license_, &QAction::triggered, this, &MainWindow::License);
 }
 
 void MainWindow::CreateMenus() {
@@ -689,7 +788,7 @@ void MainWindow::CreateMenus() {
   extras_menu->addSeparator();
   extras_menu->addAction(action_set_options_);
   extras_menu->addAction(action_reset_options_);
-  extras_menu->addAction(action_set_log_level_);
+  extras_menu->addAction(action_set_log_options_);
   menuBar()->addAction(extras_menu->menuAction());
 
   QMenu* help_menu = new QMenu(tr("Help"), this);
@@ -698,11 +797,6 @@ void MainWindow::CreateMenus() {
   help_menu->addAction(action_support_);
   help_menu->addAction(action_license_);
   menuBar()->addAction(help_menu->menuAction());
-
-  // TODO: Make the native menu bar work on OSX. Simply setting this to true
-  // will result in a menubar which is not clickable until the main window is
-  // defocused and refocused.
-  menuBar()->setNativeMenuBar(false);
 }
 
 void MainWindow::CreateToolbar() {
@@ -766,45 +860,109 @@ void MainWindow::CreateStatusbar() {
   statusBar()->addWidget(model_viewer_widget_->statusbar_status_label, 1);
 }
 
-void MainWindow::CreateControllers() {
+void MainWindow::CreateMapperController() {
+  StopMapperController();
+
+  options_.mapper->image_path = *options_.image_path;
+
+  // Triggers an immediate render of the current reconstruction, unless the
+  // mapper is being stopped.
+  const auto render_now = [this]() {
+    if (!mapper_controller_->IsStopped()) {
+      action_render_now_->trigger();
+    }
+  };
+  // Triggers a rate-limited render of the current reconstruction.
+  const auto render = [this]() {
+    if (!mapper_controller_->IsStopped()) {
+      action_render_->trigger();
+    }
+  };
+
+  switch (mapper_type_) {
+    case MapperType::INCREMENTAL: {
+      auto controller = std::make_unique<ControllerThread<IncrementalPipeline>>(
+          std::make_shared<IncrementalPipeline>(
+              options_.mapper,
+              Database::Open(*options_.database_path),
+              reconstruction_manager_));
+      controller->GetController()->AddCallback(
+          IncrementalPipeline::INITIAL_IMAGE_PAIR_REG_CALLBACK, render_now);
+      controller->GetController()->AddCallback(
+          IncrementalPipeline::NEXT_IMAGE_REG_CALLBACK, render);
+      controller->GetController()->AddCallback(
+          IncrementalPipeline::LAST_IMAGE_REG_CALLBACK, render_now);
+      mapper_controller_ = std::move(controller);
+      break;
+    }
+    case MapperType::GLOBAL: {
+      GlobalPipelineOptions global_options = *options_.global_mapper;
+      global_options.image_path = *options_.image_path;
+      auto controller = std::make_unique<ControllerThread<GlobalPipeline>>(
+          std::make_shared<GlobalPipeline>(
+              std::move(global_options),
+              Database::Open(*options_.database_path),
+              reconstruction_manager_));
+      // The global mapper only renders after global positioning and each
+      // refinement, via this callback.
+      controller->GetController()->AddCallback(
+          GlobalPipeline::MODEL_UPDATE_CALLBACK, render_now);
+      mapper_controller_ = std::move(controller);
+      break;
+    }
+    case MapperType::HIERARCHICAL: {
+      HierarchicalPipelineOptions hierarchical_options =
+          *options_.hierarchical_mapper;
+      hierarchical_options.image_path = *options_.image_path;
+      hierarchical_options.incremental_options = *options_.mapper;
+      // The hierarchical mapper reconstructs clusters in separate managers and
+      // only populates the main reconstruction at the end, so no intermediate
+      // render callback is wired; only the finished callback below renders.
+      mapper_controller_ =
+          std::make_unique<ControllerThread<HierarchicalPipeline>>(
+              std::make_shared<HierarchicalPipeline>(
+                  hierarchical_options,
+                  Database::Open(*options_.database_path),
+                  reconstruction_manager_));
+      break;
+    }
+  }
+
+  mapper_controller_->AddCallback(Thread::FINISHED_CALLBACK, [this]() {
+    if (!mapper_controller_->IsStopped()) {
+      action_render_now_->trigger();
+      action_reconstruction_finish_->trigger();
+    }
+    if (reconstruction_manager_->Size() == 0) {
+      action_reconstruction_reset_->trigger();
+    }
+  });
+
+  UpdateMapperControls();
+}
+
+void MainWindow::StopMapperController() {
   if (mapper_controller_) {
     mapper_controller_->Stop();
     mapper_controller_->Wait();
+    mapper_controller_.reset();
   }
+}
 
-  mapper_controller_ = std::make_unique<ControllerThread<IncrementalPipeline>>(
-      std::make_shared<IncrementalPipeline>(options_.mapper,
-                                            *options_.image_path,
-                                            *options_.database_path,
-                                            reconstruction_manager_));
-  mapper_controller_->GetController()->AddCallback(
-      IncrementalPipeline::INITIAL_IMAGE_PAIR_REG_CALLBACK, [this]() {
-        if (!mapper_controller_->IsStopped()) {
-          action_render_now_->trigger();
-        }
-      });
-  mapper_controller_->GetController()->AddCallback(
-      IncrementalPipeline::NEXT_IMAGE_REG_CALLBACK, [this]() {
-        if (!mapper_controller_->IsStopped()) {
-          action_render_->trigger();
-        }
-      });
-  mapper_controller_->GetController()->AddCallback(
-      IncrementalPipeline::LAST_IMAGE_REG_CALLBACK, [this]() {
-        if (!mapper_controller_->IsStopped()) {
-          action_render_now_->trigger();
-        }
-      });
-  mapper_controller_->AddCallback(
-      ControllerThread<IncrementalPipeline>::FINISHED_CALLBACK, [this]() {
-        if (!mapper_controller_->IsStopped()) {
-          action_render_now_->trigger();
-          action_reconstruction_finish_->trigger();
-        }
-        if (reconstruction_manager_->Size() == 0) {
-          action_reconstruction_reset_->trigger();
-        }
-      });
+void MainWindow::ResetMapperController() {
+  // Tear down any existing controller without building a new one (which would
+  // eagerly read the database). A fresh controller is created lazily in
+  // ReconstructionStart().
+  StopMapperController();
+  UpdateMapperControls();
+}
+
+void MainWindow::HandleDragEvent(QDropEvent* event) {
+  if (event->mimeData()->hasUrls()) {
+    event->acceptProposedAction();
+  } else {
+    event->ignore();
+  }
 }
 
 void MainWindow::ProjectNew() {
@@ -827,19 +985,22 @@ bool MainWindow::ProjectOpen() {
                                    tr("Project file (*.ini)"))
           .toUtf8()
           .constData();
-  // If selection not canceled
-  if (project_path != "") {
-    if (options_.ReRead(project_path)) {
-      *options_.project_path = project_path;
-      project_widget_->SetDatabasePath(*options_.database_path);
-      project_widget_->SetImagePath(*options_.image_path);
-      UpdateWindowTitle();
-      SetLastOpen(kLastDirProject, QString::fromStdString(project_path));
-      return true;
-    } else {
-      ShowInvalidProjectError();
-    }
+
+  if (project_path.empty()) {
+    // Selection cancelled.
+    return false;
   }
+
+  if (options_.ReRead(project_path)) {
+    *options_.project_path = project_path;
+    project_widget_->SetDatabasePath(*options_.database_path);
+    project_widget_->SetImagePath(*options_.image_path);
+    UpdateWindowTitle();
+    SetLastOpen(kLastDirProject, QString::fromStdString(project_path));
+    return true;
+  }
+
+  ShowInvalidProjectError();
 
   return false;
 }
@@ -858,8 +1019,7 @@ void MainWindow::ProjectSave() {
                                      tr("Project file (*.ini)"))
             .toUtf8()
             .constData();
-    // If selection not canceled
-    if (project_path != "") {
+    if (!project_path.empty()) {
       if (!HasFileExtension(project_path, ".ini")) {
         project_path += ".ini";
       }
@@ -871,7 +1031,7 @@ void MainWindow::ProjectSave() {
     // Project path was chosen previously, either here or via command-line.
     options_.Write(*options_.project_path);
     SetLastOpen(kLastDirProject,
-                QString::fromStdString(*options_.project_path));
+                QString::fromStdString(options_.project_path->string()));
   }
 
   UpdateWindowTitle();
@@ -908,37 +1068,76 @@ void MainWindow::Import() {
 
 void MainWindow::ImportFrom() {
   const std::string import_path =
-      QFileDialog::getOpenFileName(
-          this, tr("Select source..."), GetLastOpen(kLastImportExport))
+      QFileDialog::getOpenFileName(this,
+                                   tr("Select PLY file..."),
+                                   GetLastOpen(kLastImportExport),
+                                   tr("PLY files (*.ply)"))
           .toUtf8()
           .constData();
 
-  // Selection canceled?
-  if (import_path == "") {
+  if (import_path.empty()) {
+    // Selection cancelled.
     return;
   }
 
   SetLastOpen(kLastImportExport, QString::fromStdString(import_path));
+  ImportFrom(import_path);
+}
 
+void MainWindow::ImportFrom(const std::string& import_path) {
   if (!ExistsFile(import_path)) {
     QMessageBox::critical(this, "", tr("Invalid file"));
     return;
   }
 
-  if (!HasFileExtension(import_path, ".ply")) {
-    QMessageBox::critical(
-        this, "", tr("Invalid file format (supported formats: PLY)"));
-    return;
-  }
+  if (HasPlyMeshFaces(import_path)) {
+    thread_control_widget_->StartFunction(
+        "Importing surface mesh...", [this, import_path]() {
+          try {
+            PlyTexturedMesh textured_mesh = ReadPlyMesh(import_path);
 
-  thread_control_widget_->StartFunction("Importing...", [this, import_path]() {
-    const size_t reconstruction_idx = reconstruction_manager_->Add();
-    reconstruction_manager_->Get(reconstruction_idx)->ImportPLY(import_path);
-    options_.render->min_track_len = 0;
-    reconstruction_manager_widget_->Update();
-    reconstruction_manager_widget_->SelectReconstruction(reconstruction_idx);
-    action_render_now_->trigger();
-  });
+            // Clear any previous texture data.
+            model_viewer_widget_->surface_texture_data.clear();
+            model_viewer_widget_->surface_texture_width = 0;
+            model_viewer_widget_->surface_texture_height = 0;
+
+            // Load texture atlas if the mesh has UV coordinates and a
+            // texture file reference.
+            if (!textured_mesh.face_uvs.empty() &&
+                !textured_mesh.texture_file.empty()) {
+              const auto ply_dir =
+                  std::filesystem::path(import_path).parent_path();
+              const auto texture_path = ply_dir / textured_mesh.texture_file;
+              Bitmap bitmap;
+              if (bitmap.Read(texture_path, /*as_rgb=*/true)) {
+                model_viewer_widget_->surface_texture_data =
+                    bitmap.RowMajorData();
+                model_viewer_widget_->surface_texture_width = bitmap.Width();
+                model_viewer_widget_->surface_texture_height = bitmap.Height();
+              } else {
+                LOG(WARNING) << "Failed to read texture file: " << texture_path
+                             << ". Falling back to vertex colors.";
+                textured_mesh.face_uvs.clear();
+              }
+            }
+
+            model_viewer_widget_->surface_mesh = std::move(textured_mesh);
+            action_render_now_->trigger();
+          } catch (const std::exception& e) {
+            LOG(ERROR) << "Failed to read surface mesh: " << e.what();
+          }
+        });
+  } else {
+    thread_control_widget_->StartFunction(
+        "Importing point cloud...", [this, import_path]() {
+          try {
+            model_viewer_widget_->point_cloud = ReadPly(import_path);
+            action_render_now_->trigger();
+          } catch (const std::exception& e) {
+            LOG(ERROR) << "Failed to read point cloud: " << e.what();
+          }
+        });
+  }
 }
 
 void MainWindow::Export() {
@@ -946,7 +1145,7 @@ void MainWindow::Export() {
     return;
   }
 
-  const std::string export_path =
+  const std::filesystem::path export_path =
       QFileDialog::getExistingDirectory(this,
                                         tr("Select destination..."),
                                         GetLastOpen(kLastImportExport),
@@ -954,21 +1153,21 @@ void MainWindow::Export() {
           .toUtf8()
           .constData();
 
-  // Selection canceled?
-  if (export_path == "") {
+  // Selection cancelled?
+  if (export_path.empty()) {
     return;
   }
 
-  SetLastOpen(kLastImportExport, QString::fromStdString(export_path));
+  SetLastOpen(kLastImportExport, QString::fromStdString(export_path.string()));
 
   const std::string cameras_name = "cameras.bin";
   const std::string images_name = "images.bin";
   const std::string points3D_name = "points3D.bin";
 
-  const std::string project_path = JoinPaths(export_path, "project.ini");
-  const std::string cameras_path = JoinPaths(export_path, cameras_name);
-  const std::string images_path = JoinPaths(export_path, images_name);
-  const std::string points3D_path = JoinPaths(export_path, points3D_name);
+  const std::filesystem::path project_path = export_path / "project.ini";
+  const std::filesystem::path cameras_path = export_path / cameras_name;
+  const std::filesystem::path images_path = export_path / images_name;
+  const std::filesystem::path points3D_path = export_path / points3D_name;
 
   if (ExistsFile(cameras_path) || ExistsFile(images_path) ||
       ExistsFile(points3D_path)) {
@@ -1001,7 +1200,7 @@ void MainWindow::ExportAll() {
     return;
   }
 
-  const std::string export_path =
+  const std::filesystem::path export_path =
       QFileDialog::getExistingDirectory(this,
                                         tr("Select destination..."),
                                         GetLastOpen(kLastImportExport),
@@ -1009,16 +1208,16 @@ void MainWindow::ExportAll() {
           .toUtf8()
           .constData();
 
-  // Selection canceled?
-  if (export_path == "") {
+  if (export_path.empty()) {
+    // Selection cancelled.
     return;
   }
 
-  SetLastOpen(kLastImportExport, QString::fromStdString(export_path));
+  SetLastOpen(kLastImportExport, QString::fromStdString(export_path.string()));
 
   thread_control_widget_->StartFunction("Exporting...", [this, export_path]() {
     reconstruction_manager_->Write(export_path);
-    options_.Write(JoinPaths(export_path, "project.ini"));
+    options_.Write(export_path / "project.ini");
   });
 }
 
@@ -1028,7 +1227,7 @@ void MainWindow::ExportAs() {
   }
 
   QString filter("NVM (*.nvm)");
-  const std::string export_path =
+  const std::filesystem::path export_path =
       QFileDialog::getSaveFileName(
           this,
           tr("Select destination..."),
@@ -1038,12 +1237,12 @@ void MainWindow::ExportAs() {
           .toUtf8()
           .constData();
 
-  // Selection canceled?
-  if (export_path == "") {
+  if (export_path.empty()) {
+    // Selection cancelled.
     return;
   }
 
-  SetLastOpen(kLastImportExport, QString::fromStdString(export_path));
+  SetLastOpen(kLastImportExport, QString::fromStdString(export_path.string()));
 
   thread_control_widget_->StartFunction(
       "Exporting...", [this, export_path, filter]() {
@@ -1052,16 +1251,16 @@ void MainWindow::ExportAs() {
         if (filter == "NVM (*.nvm)") {
           ExportNVM(*reconstruction, export_path);
         } else if (filter == "Bundler (*.out)") {
-          ExportBundler(
-              *reconstruction, export_path, export_path + ".list.txt");
+          ExportBundler(*reconstruction,
+                        export_path,
+                        AddFileExtension(export_path, ".list.txt"));
         } else if (filter == "PLY (*.ply)") {
           ExportPLY(*reconstruction, export_path);
         } else if (filter == "VRML (*.wrl)") {
-          const auto base_path =
-              export_path.substr(0, export_path.find_last_of('.'));
+          const auto base_path = export_path.parent_path() / export_path.stem();
           ExportVRML(*reconstruction,
-                     base_path + ".images.wrl",
-                     base_path + ".points3D.wrl",
+                     AddFileExtension(base_path, ".images.wrl"),
+                     AddFileExtension(base_path, ".points3D.wrl"),
                      1,
                      Eigen::Vector3d(1, 0, 0));
         }
@@ -1073,7 +1272,7 @@ void MainWindow::ExportAsText() {
     return;
   }
 
-  const std::string export_path =
+  const std::filesystem::path export_path =
       QFileDialog::getExistingDirectory(this,
                                         tr("Select destination..."),
                                         GetLastOpen(kLastImportExport),
@@ -1081,21 +1280,21 @@ void MainWindow::ExportAsText() {
           .toUtf8()
           .constData();
 
-  // Selection canceled?
-  if (export_path == "") {
+  if (export_path.empty()) {
+    // Selection cancelled.
     return;
   }
 
-  SetLastOpen(kLastImportExport, QString::fromStdString(export_path));
+  SetLastOpen(kLastImportExport, QString::fromStdString(export_path.string()));
 
   const std::string cameras_name = "cameras.txt";
   const std::string images_name = "images.txt";
   const std::string points3D_name = "points3D.txt";
 
-  const std::string project_path = JoinPaths(export_path, "project.ini");
-  const std::string cameras_path = JoinPaths(export_path, cameras_name);
-  const std::string images_path = JoinPaths(export_path, images_name);
-  const std::string points3D_path = JoinPaths(export_path, points3D_name);
+  const std::filesystem::path project_path = export_path / "project.ini";
+  const std::filesystem::path cameras_path = export_path / cameras_name;
+  const std::filesystem::path images_path = export_path / images_name;
+  const std::filesystem::path points3D_path = export_path / points3D_name;
 
   if (ExistsFile(cameras_path) || ExistsFile(images_path) ||
       ExistsFile(points3D_path)) {
@@ -1156,24 +1355,27 @@ void MainWindow::AutomaticReconstruction() {
 }
 
 void MainWindow::ReconstructionStart() {
-  if (!mapper_controller_->IsStarted() && !options_.Check()) {
+  const bool started = mapper_controller_ && mapper_controller_->IsStarted();
+  const bool finished = mapper_controller_ && mapper_controller_->IsFinished();
+
+  if (!started && !options_.Check()) {
     ShowInvalidProjectError();
     return;
   }
 
-  if (mapper_controller_->IsFinished() && HasSelectedReconstruction()) {
+  if (finished && HasSelectedReconstruction()) {
     QMessageBox::critical(
         this, "", tr("Reset reconstruction before starting."));
     return;
   }
 
-  if (mapper_controller_->IsStarted()) {
+  if (started) {
     // Resume existing reconstruction.
     timer_.Resume();
     mapper_controller_->Resume();
   } else {
     // Start new reconstruction.
-    CreateControllers();
+    CreateMapperController();
     timer_.Restart();
     mapper_controller_->Start();
     action_reconstruction_start_->setText(tr("Resume reconstruction"));
@@ -1181,10 +1383,17 @@ void MainWindow::ReconstructionStart() {
 
   DisableBlockingActions();
   action_reconstruction_pause_->setEnabled(true);
+  UpdateMapperControls();
 }
 
 void MainWindow::ReconstructionStep() {
-  if (mapper_controller_->IsFinished() && HasSelectedReconstruction()) {
+  // Stepping is only supported for the incremental and global mappers.
+  if (mapper_type_ == MapperType::HIERARCHICAL) {
+    return;
+  }
+
+  if (mapper_controller_ && mapper_controller_->IsFinished() &&
+      HasSelectedReconstruction()) {
     QMessageBox::critical(
         this, "", tr("Reset reconstruction before starting."));
     return;
@@ -1197,6 +1406,9 @@ void MainWindow::ReconstructionStep() {
 }
 
 void MainWindow::ReconstructionPause() {
+  if (!mapper_controller_) {
+    return;
+  }
   timer_.Pause();
   mapper_controller_->Pause();
   EnableBlockingActions();
@@ -1218,13 +1430,10 @@ void MainWindow::ReconstructionFinish() {
 }
 
 void MainWindow::ReconstructionReset() {
-  CreateControllers();
+  ResetMapperController();
 
   reconstruction_manager_->Clear();
   reconstruction_manager_widget_->Update();
-
-  timer_.Reset();
-  UpdateTimer();
 
   EnableBlockingActions();
   action_reconstruction_start_->setText(tr("Start reconstruction"));
@@ -1312,7 +1521,13 @@ void MainWindow::RenderNow() {
 
 void MainWindow::RenderSelectedReconstruction() {
   if (reconstruction_manager_->Size() == 0) {
-    RenderClear();
+    if (model_viewer_widget_->surface_mesh.has_value() ||
+        model_viewer_widget_->point_cloud.has_value()) {
+      model_viewer_widget_->reconstruction = nullptr;
+      model_viewer_widget_->ReloadReconstruction();
+    } else {
+      RenderClear();
+    }
     return;
   }
 
@@ -1326,6 +1541,8 @@ void MainWindow::RenderClear() {
   reconstruction_manager_widget_->SelectReconstruction(
       ReconstructionManagerWidget::kNewestReconstructionIdx);
   model_viewer_widget_->ClearReconstruction();
+  timer_.Reset();
+  UpdateTimer();
 }
 
 void MainWindow::RenderOptions() {
@@ -1478,27 +1695,97 @@ void MainWindow::ResetOptions() {
   options_.ResetOptions(kResetPaths);
 }
 
-void MainWindow::SetLogLevel() {
-  bool ok = false;
-  const int log_level =
-      QInputDialog::getInt(this, "", "Log Level:", FLAGS_v, 0, 3, 1, &ok);
-  if (!ok) {
-    return;
-  }
+void MainWindow::SetLogOptions() {
+  QDialog dialog(this);
+  dialog.setWindowTitle("Log Options");
+  dialog.resize(220, 160);
 
-  FLAGS_v = log_level;
+  QFormLayout* form_layout = new QFormLayout(&dialog);
+
+  // Log target
+  QComboBox* log_target_box = new QComboBox(&dialog);
+  log_target_box->addItems({"stderr", "stdout", "file", "stderr_and_file"});
+  log_target_box->setCurrentText(GetLogTarget().c_str());
+  log_target_box->setToolTip(
+      QString("Default output path: system temporary directory "
+              "(usually: %1)")
+          .arg(std::filesystem::temp_directory_path().c_str()));
+  form_layout->addRow("Log target", log_target_box);
+
+  // NOTE: glog resolves log file paths during initialization.
+  // Runtime modification of FLAGS_log_dir does not re-open log files,
+  // therefore directory changes are not supported here.
+
+  // Verbosity
+  QSpinBox* verbosity_box = new QSpinBox(&dialog);
+  verbosity_box->setRange(0, 10);
+  verbosity_box->setValue(FLAGS_v);
+  form_layout->addRow("Verbosity", verbosity_box);
+
+  // Minimum severity
+  QComboBox* min_severity_box = new QComboBox(&dialog);
+  min_severity_box->addItems({"INFO", "WARNING", "ERROR", "FATAL"});
+  min_severity_box->setCurrentIndex(FLAGS_minloglevel);
+  form_layout->addRow("Minimum severity", min_severity_box);
+
+  // Color
+#if COLMAP_GLOG_HAS_COLOR_SUPPORT
+  QComboBox* color_box = new QComboBox(&dialog);
+  color_box->addItems({"Disabled", "Enabled"});
+  color_box->setCurrentIndex(static_cast<int>(FLAGS_colorlogtostderr));
+  form_layout->addRow("Colored logging", color_box);
+#endif
+
+  QDialogButtonBox* buttons = new QDialogButtonBox(
+      QDialogButtonBox::Ok | QDialogButtonBox::Cancel, Qt::Horizontal, &dialog);
+
+  connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+  connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+  form_layout->addRow(buttons);
+
+  if (dialog.exec() == QDialog::Accepted) {
+    ApplyLogOptions(log_target_box->currentText().toStdString(),
+                    verbosity_box->value(),
+                    min_severity_box->currentIndex(),
+#if COLMAP_GLOG_HAS_COLOR_SUPPORT
+                    color_box->currentIndex()
+#else
+                    0
+#endif
+    );
+  }
 }
 
 void MainWindow::About() {
-  QMessageBox::about(
-      this,
-      tr("About"),
-      QString().asprintf("<span style='font-weight:normal'><b>%s</b><br />"
-                         "<small>(%s)</small><br /><br />"
-                         "<b>Author:</b> Johannes L. Schönberger<br /><br />"
-                         "<b>Email:</b> jsch-at-demuc-dot-de</span>",
-                         GetVersionInfo().c_str(),
-                         GetBuildInfo().c_str()));
+  QMessageBox message_box(this);
+  message_box.setWindowTitle(tr("About"));
+  message_box.setTextFormat(Qt::RichText);
+
+  // Render the logo directly from the SVG at the target size (accounting for
+  // high-DPI displays) so it stays crisp instead of scaling a raster.
+  constexpr int kLogoSize = 96;
+  const qreal device_pixel_ratio = devicePixelRatioF();
+  QPixmap logo(QSize(kLogoSize, kLogoSize) * device_pixel_ratio);
+  logo.fill(Qt::transparent);
+  QSvgRenderer logo_renderer(QStringLiteral(":/media/colmap-logo.svg"));
+  QPainter logo_painter(&logo);
+  logo_renderer.render(&logo_painter);
+  logo_painter.end();
+  logo.setDevicePixelRatio(device_pixel_ratio);
+  message_box.setIconPixmap(logo);
+
+  message_box.setText(QString::fromStdString(GetVersionInfo()));
+  message_box.setInformativeText(QString().asprintf(
+      "<small>%s</small><br><br>"
+      "COLMAP is a general-purpose Structure-from-Motion (SfM) and "
+      "Multi-View Stereo (MVS) pipeline.<br><br>"
+      "COLMAP is developed by its core maintainers together with many "
+      "community contributors. For documentation, source code, and the full "
+      "list of contributors, please visit "
+      "<a href=\"https://colmap.github.io/\">https://colmap.github.io/</a>.",
+      GetBuildInfo().c_str()));
+  message_box.exec();
 }
 
 void MainWindow::Documentation() {
@@ -1510,17 +1797,42 @@ void MainWindow::Support() {
       QUrl("https://github.com/colmap/colmap/discussions"));
 }
 
+void MainWindow::License() {
+  QFile file(":/LICENSE");
+  QString license;
+  if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    // Reflow the raw license text: ignore the hard line breaks within each
+    // paragraph and only break at blank lines, rendering paragraphs with
+    // spacing between them.
+    const QString text = QString::fromUtf8(file.readAll());
+    const QStringList paragraphs =
+        text.split(QRegularExpression("\n\\s*\n"), Qt::SkipEmptyParts);
+    for (const QString& paragraph : paragraphs) {
+      license += "<p>" + paragraph.simplified().toHtmlEscaped() + "</p>";
+    }
+  } else {
+    license = tr("Failed to load license text.");
+  }
+
+  QMessageBox message_box(this);
+  message_box.setWindowTitle(tr("License"));
+  message_box.setTextFormat(Qt::RichText);
+  message_box.setText(license);
+  message_box.setStyleSheet("QLabel { font-weight: normal; }");
+  message_box.exec();
+}
+
 void MainWindow::RenderToggle() {
   if (render_options_widget_->automatic_update) {
     render_options_widget_->automatic_update = false;
     render_options_widget_->counter = 0;
-    action_render_toggle_->setIcon(QIcon(":/media/render-disabled.png"));
+    action_render_toggle_->setIcon(ThemedIcon(":/media/render-disabled.svg"));
     action_render_toggle_->setText(tr("Enable rendering"));
   } else {
     render_options_widget_->automatic_update = true;
     render_options_widget_->counter = 0;
     RenderNow();
-    action_render_toggle_->setIcon(QIcon(":/media/render-enabled.png"));
+    action_render_toggle_->setIcon(ThemedIcon(":/media/render-enabled.svg"));
     action_render_toggle_->setText(tr("Disable rendering"));
   }
 }
@@ -1546,6 +1858,29 @@ void MainWindow::EnableBlockingActions() {
   for (auto& action : blocking_actions_) {
     action->setEnabled(true);
   }
+  UpdateMapperControls();
+}
+
+void MainWindow::UpdateMapperControls() {
+  // Derive the enabled state of the step/pause controls from the reconstruction
+  // lifecycle rather than from the controls' current state. This keeps them
+  // correct when the user toggles the mapper type back and forth (e.g. switch
+  // to hierarchical and back to incremental), which the previous
+  // preserve-current-state logic got wrong by permanently disabling stepping.
+  const bool started = mapper_controller_ && mapper_controller_->IsStarted();
+  const bool finished = mapper_controller_ && mapper_controller_->IsFinished();
+  const bool paused = mapper_controller_ && mapper_controller_->IsPaused();
+  const bool running = started && !paused && !finished;
+
+  // The hierarchical mapper runs as a single solve that cannot be stepped or
+  // paused, so both controls stay disabled while it is selected.
+  const bool supports_stepping = mapper_type_ != MapperType::HIERARCHICAL;
+
+  // Stepping is available while the reconstruction is idle or paused (but not
+  // while running or finished); pausing is only available while running.
+  action_reconstruction_step_->setEnabled(supports_stepping && !running &&
+                                          !finished);
+  action_reconstruction_pause_->setEnabled(supports_stepping && running);
 }
 
 void MainWindow::DisableBlockingActions() {
@@ -1555,10 +1890,10 @@ void MainWindow::DisableBlockingActions() {
 }
 
 void MainWindow::UpdateWindowTitle() {
-  if (*options_.project_path == "") {
+  if (options_.project_path->empty()) {
     setWindowTitle(QString::fromStdString("COLMAP"));
   } else {
-    std::string project_title = *options_.project_path;
+    std::string project_title = options_.project_path->string();
     if (project_title.size() > 80) {
       project_title =
           "..." + project_title.substr(project_title.size() - 77, 77);

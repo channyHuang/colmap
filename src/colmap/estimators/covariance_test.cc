@@ -1,37 +1,9 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/estimators/covariance.h"
 
-#include "colmap/estimators/bundle_adjustment.h"
-#include "colmap/estimators/manifold.h"
-#include "colmap/math/random.h"
+#include "colmap/estimators/bundle_adjustment_ceres.h"
+#include "colmap/estimators/cost_functions/manifold.h"
 #include "colmap/scene/reconstruction.h"
 #include "colmap/scene/synthetic.h"
 
@@ -63,8 +35,6 @@ class ParameterizedBACovarianceTests
           std::pair<BACovarianceOptions, BACovarianceTestOptions>> {};
 
 TEST_P(ParameterizedBACovarianceTests, CompareWithCeres) {
-  SetPRNGSeed(42);
-
   const auto [options, test_options] = GetParam();
 
   const bool estimate_point_covs =
@@ -110,14 +80,17 @@ TEST_P(ParameterizedBACovarianceTests, CompareWithCeres) {
   }
 
   std::unique_ptr<BundleAdjuster> bundle_adjuster = CreateDefaultBundleAdjuster(
-      BundleAdjustmentOptions(), std::move(config), reconstruction);
+      BundleAdjustmentOptions(), config, reconstruction);
   const auto summary = bundle_adjuster->Solve();
-  ASSERT_TRUE(summary.IsSolutionUsable());
+  ASSERT_TRUE(summary->IsSolutionUsable());
 
-  std::shared_ptr<ceres::Problem> problem = bundle_adjuster->Problem();
+  // Cast to CeresBundleAdjuster to access Problem()
+  auto* ceres_ba = dynamic_cast<CeresBundleAdjuster*>(bundle_adjuster.get());
+  ASSERT_NE(ceres_ba, nullptr);
+  std::shared_ptr<ceres::Problem> problem = ceres_ba->Problem();
 
   const std::optional<BACovariance> ba_cov =
-      EstimateBACovariance(options, reconstruction, *bundle_adjuster);
+      EstimateBACovariance(options, reconstruction, *ceres_ba);
   ASSERT_TRUE(ba_cov.has_value());
 
   const std::vector<internal::PointParam> points =
@@ -150,18 +123,8 @@ TEST_P(ParameterizedBACovarianceTests, CompareWithCeres) {
     std::vector<std::pair<const double*, const double*>> cov_param_pairs;
     for (const auto& pose1 : poses) {
       for (const auto& pose2 : poses) {
-        if (pose1.qvec != nullptr && pose2.qvec != nullptr) {
-          cov_param_pairs.emplace_back(pose1.qvec, pose2.qvec);
-        }
-        if (pose1.tvec != nullptr && pose2.tvec != nullptr) {
-          cov_param_pairs.emplace_back(pose1.tvec, pose2.tvec);
-        }
-        if (pose1.qvec != nullptr && pose2.tvec != nullptr) {
-          cov_param_pairs.emplace_back(pose1.qvec, pose2.tvec);
-        }
-        if (pose1.tvec != nullptr && pose2.qvec != nullptr) {
-          cov_param_pairs.emplace_back(pose1.tvec, pose2.qvec);
-        }
+        cov_param_pairs.emplace_back(pose1.cam_from_world,
+                                     pose2.cam_from_world);
       }
     }
 
@@ -173,26 +136,15 @@ TEST_P(ParameterizedBACovarianceTests, CompareWithCeres) {
       for (const auto& pose2 : poses) {
         std::vector<const double*> param_blocks;
 
-        int tangent_size1 = 0;
-        if (pose1.qvec != nullptr) {
-          tangent_size1 += ParameterBlockTangentSize(*problem, pose1.qvec);
-          param_blocks.push_back(pose1.qvec);
-        }
-        if (pose1.tvec != nullptr) {
-          tangent_size1 += ParameterBlockTangentSize(*problem, pose1.tvec);
-          param_blocks.push_back(pose1.tvec);
-        }
+        const int tangent_size1 =
+            ParameterBlockTangentSize(*problem, pose1.cam_from_world);
+        param_blocks.push_back(pose1.cam_from_world);
 
         int tangent_size2 = 0;
         if (pose1.image_id != pose2.image_id) {
-          if (pose2.qvec != nullptr) {
-            tangent_size2 += ParameterBlockTangentSize(*problem, pose2.qvec);
-            param_blocks.push_back(pose2.qvec);
-          }
-          if (pose2.tvec != nullptr) {
-            tangent_size2 += ParameterBlockTangentSize(*problem, pose2.tvec);
-            param_blocks.push_back(pose2.tvec);
-          }
+          tangent_size2 +=
+              ParameterBlockTangentSize(*problem, pose2.cam_from_world);
+          param_blocks.push_back(pose2.cam_from_world);
         }
 
         Eigen::MatrixXd ceres_cov(tangent_size1 + tangent_size2,
@@ -261,12 +213,8 @@ TEST_P(ParameterizedBACovarianceTests, CompareWithCeres) {
 
     // Set all pose/other parameters as constant.
     for (const auto& pose : poses) {
-      if (pose.qvec != nullptr) {
-        problem->SetParameterBlockConstant(const_cast<double*>(pose.qvec));
-      }
-      if (pose.tvec != nullptr) {
-        problem->SetParameterBlockConstant(const_cast<double*>(pose.tvec));
-      }
+      problem->SetParameterBlockConstant(
+          const_cast<double*>(pose.cam_from_world));
     }
     for (const double* other : others) {
       if (other != nullptr) {

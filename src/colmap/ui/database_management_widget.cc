@@ -1,37 +1,9 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/ui/database_management_widget.h"
 
 #include "colmap/scene/database.h"
 #include "colmap/sensor/models.h"
-#include "colmap/util/file.h"
 #include "colmap/util/misc.h"
 
 namespace colmap {
@@ -90,9 +62,8 @@ void TwoViewInfoTab::ShowMatches() {
   const size_t idx =
       sorted_matches_idxs_[select->selectedRows().begin()->row()];
   const auto& selection = matches_[idx];
-  const std::string path1 = JoinPaths(*options_->image_path, image_->Name());
-  const std::string path2 =
-      JoinPaths(*options_->image_path, selection.first->Name());
+  const auto path1 = *options_->image_path / image_->Name();
+  const auto path2 = *options_->image_path / selection.first->Name();
   const auto keypoints1 = database_->ReadKeypoints(image_->ImageId());
   const auto keypoints2 = database_->ReadKeypoints(selection.first->ImageId());
 
@@ -449,7 +420,6 @@ void CameraTab::SetModel() {
   table_widget_->blockSignals(true);
 
   for (QModelIndex& index : select->selectedRows()) {
-    LOG(INFO) << index.row();
     auto& camera = cameras_.at(index.row());
     camera = Camera::CreateFromModelName(camera.camera_id,
                                          camera_model.toUtf8().constData(),
@@ -473,22 +443,10 @@ ImageTab::ImageTab(QWidget* parent,
   info_label_ = new QLabel(this);
   grid->addWidget(info_label_, 0, 0);
 
-  QPushButton* set_camera_button = new QPushButton(tr("Set camera"), this);
-  connect(
-      set_camera_button, &QPushButton::released, this, &ImageTab::SetCamera);
-  grid->addWidget(set_camera_button, 0, 1, Qt::AlignRight);
-
-  QPushButton* split_camera_button = new QPushButton(tr("Split camera"), this);
-  connect(split_camera_button,
-          &QPushButton::released,
-          this,
-          &ImageTab::SplitCamera);
-  grid->addWidget(split_camera_button, 0, 2, Qt::AlignRight);
-
   QPushButton* show_image_button = new QPushButton(tr("Show image"), this);
   connect(
       show_image_button, &QPushButton::released, this, &ImageTab::ShowImage);
-  grid->addWidget(show_image_button, 0, 3, Qt::AlignRight);
+  grid->addWidget(show_image_button, 0, 1, Qt::AlignRight);
 
   QPushButton* overlapping_images_button =
       new QPushButton(tr("Overlapping images"), this);
@@ -496,15 +454,15 @@ ImageTab::ImageTab(QWidget* parent,
           &QPushButton::released,
           this,
           &ImageTab::ShowMatches);
-  grid->addWidget(overlapping_images_button, 0, 4, Qt::AlignRight);
+  grid->addWidget(overlapping_images_button, 0, 2, Qt::AlignRight);
 
   table_widget_ = new QTableWidget(this);
   table_widget_->setColumnCount(3);
 
   QStringList table_header;
   table_header << "image_id"
-               << "name"
-               << "camera_id";
+               << "camera_id"
+               << "name";
   table_widget_->setHorizontalHeaderLabels(table_header);
 
   table_widget_->setShowGrid(true);
@@ -512,9 +470,7 @@ ImageTab::ImageTab(QWidget* parent,
   table_widget_->horizontalHeader()->setStretchLastSection(true);
   table_widget_->verticalHeader()->setVisible(false);
   table_widget_->verticalHeader()->setDefaultSectionSize(20);
-
-  connect(
-      table_widget_, &QTableWidget::itemChanged, this, &ImageTab::itemChanged);
+  table_widget_->setEditTriggers(QAbstractItemView::NoEditTriggers);
 
   grid->addWidget(table_widget_, 1, 0, 1, 5);
 
@@ -548,9 +504,9 @@ void ImageTab::Reload(const std::shared_ptr<Database>& database) {
     id_item->setFlags(Qt::ItemIsSelectable);
     table_widget_->setItem(i, 0, id_item);
     table_widget_->setItem(
-        i, 1, new QTableWidgetItem(QString::fromStdString(image.Name())));
+        i, 1, new QTableWidgetItem(QString::number(image.CameraId())));
     table_widget_->setItem(
-        i, 2, new QTableWidgetItem(QString::number(image.CameraId())));
+        i, 2, new QTableWidgetItem(QString::fromStdString(image.Name())));
   }
   table_widget_->resizeColumnsToContents();
 
@@ -560,33 +516,6 @@ void ImageTab::Reload(const std::shared_ptr<Database>& database) {
 void ImageTab::Clear() {
   images_.clear();
   table_widget_->clearContents();
-}
-
-void ImageTab::itemChanged(QTableWidgetItem* item) {
-  Image& image = images_.at(item->row());
-  camera_t camera_id = kInvalidCameraId;
-
-  switch (item->column()) {
-    // case 0: never change the image ID
-    case 1:
-      image.SetName(item->text().toUtf8().constData());
-      break;
-    case 2:
-      camera_id = static_cast<camera_t>(item->data(Qt::DisplayRole).toInt());
-      if (!database_->ExistsCamera(camera_id)) {
-        QMessageBox::critical(this, "", tr("camera_id does not exist."));
-        table_widget_->blockSignals(true);
-        item->setText(QString::number(image.CameraId()));
-        table_widget_->blockSignals(false);
-      } else {
-        image.SetCameraId(camera_id);
-      }
-      break;
-    default:
-      break;
-  }
-
-  database_->UpdateImage(image);
 }
 
 void ImageTab::ShowImage() {
@@ -608,7 +537,7 @@ void ImageTab::ShowImage() {
   const std::vector<char> tri_mask(keypoints.size(), false);
 
   image_viewer_widget_->ReadAndShowWithKeypoints(
-      JoinPaths(*options_->image_path, image.Name()), keypoints, tri_mask);
+      *options_->image_path / image.Name(), keypoints, tri_mask);
   image_viewer_widget_->setWindowTitle(
       QString::fromStdString("Image " + std::to_string(image.ImageId())));
 }
@@ -633,80 +562,6 @@ void ImageTab::ShowMatches() {
   overlapping_images_widget_->raise();
 }
 
-void ImageTab::SetCamera() {
-  QItemSelectionModel* select = table_widget_->selectionModel();
-
-  if (!select->hasSelection()) {
-    QMessageBox::critical(this, "", tr("No image selected."));
-    return;
-  }
-
-  bool ok;
-  const camera_t camera_id = static_cast<camera_t>(
-      QInputDialog::getInt(this, "", tr("camera_id"), 0, 0, INT_MAX, 1, &ok));
-  if (!ok) {
-    return;
-  }
-
-  if (!database_->ExistsCamera(camera_id)) {
-    QMessageBox::critical(this, "", tr("camera_id does not exist."));
-    return;
-  }
-
-  // Make sure, itemChanged is not invoked, while updating up the table
-  table_widget_->blockSignals(true);
-
-  for (QModelIndex& index : select->selectedRows()) {
-    table_widget_->setItem(
-        index.row(), 2, new QTableWidgetItem(QString::number(camera_id)));
-    auto& image = images_[index.row()];
-    image.SetCameraId(camera_id);
-    database_->UpdateImage(image);
-  }
-
-  table_widget_->blockSignals(false);
-}
-
-void ImageTab::SplitCamera() {
-  QItemSelectionModel* select = table_widget_->selectionModel();
-
-  if (!select->hasSelection()) {
-    QMessageBox::critical(this, "", tr("No image selected."));
-    return;
-  }
-
-  bool ok;
-  const camera_t camera_id = static_cast<camera_t>(
-      QInputDialog::getInt(this, "", tr("camera_id"), 0, 0, INT_MAX, 1, &ok));
-  if (!ok) {
-    return;
-  }
-
-  if (!database_->ExistsCamera(camera_id)) {
-    QMessageBox::critical(this, "", tr("camera_id does not exist."));
-    return;
-  }
-
-  const auto camera = database_->ReadCamera(camera_id);
-
-  // Make sure, itemChanged is not invoked, while updating up the table
-  table_widget_->blockSignals(true);
-
-  for (QModelIndex& index : select->selectedRows()) {
-    auto& image = images_[index.row()];
-    image.SetCameraId(database_->WriteCamera(camera));
-    database_->UpdateImage(image);
-    table_widget_->setItem(
-        index.row(),
-        2,
-        new QTableWidgetItem(QString::number(image.CameraId())));
-  }
-
-  table_widget_->blockSignals(false);
-
-  camera_tab_->Reload(database_);
-}
-
 PosePriorsTab::PosePriorsTab(QWidget* parent) : QWidget(parent) {
   QGridLayout* grid = new QGridLayout(this);
 
@@ -714,7 +569,7 @@ PosePriorsTab::PosePriorsTab(QWidget* parent) : QWidget(parent) {
   grid->addWidget(info_label_, 0, 0);
 
   table_widget_ = new QTableWidget(this);
-  table_widget_->setColumnCount(11);
+  table_widget_->setColumnCount(14);
 
   QStringList table_header;
   table_header << "image_id"
@@ -727,12 +582,14 @@ PosePriorsTab::PosePriorsTab(QWidget* parent) : QWidget(parent) {
                << "cov_zz"
                << "cov_xy"
                << "cov_xz"
-               << "cov_yz";
+               << "cov_yz"
+               << "gx"
+               << "gy"
+               << "gz";
   table_widget_->setHorizontalHeaderLabels(table_header);
 
   table_widget_->setShowGrid(true);
   table_widget_->setSelectionBehavior(QAbstractItemView::SelectRows);
-  table_widget_->horizontalHeader()->setStretchLastSection(true);
   table_widget_->verticalHeader()->setVisible(false);
   table_widget_->verticalHeader()->setDefaultSectionSize(20);
 
@@ -755,9 +612,8 @@ void PosePriorsTab::Reload(const std::shared_ptr<Database>& database) {
   database_ = database;
 
   QString info;
-  info += QString("Images: ") + QString::number(database_->NumImages());
-  info += QString('\n');
-  info += QString("PosePriors: ") + QString::number(database_->NumPosePriors());
+  info +=
+      QString("Pose Priors: ") + QString::number(database_->NumPosePriors());
   info_label_->setText(info);
 
   // Make sure, itemChanged is not invoked, while setting up the table
@@ -768,10 +624,12 @@ void PosePriorsTab::Reload(const std::shared_ptr<Database>& database) {
 
   int row_idx = 0;
 
-  for (const auto& image : database_->ReadAllImages()) {
-    const PosePrior prior = database_->ExistsPosePrior(image.ImageId())
-                                ? database_->ReadPosePrior(image.ImageId())
-                                : PosePrior();
+  for (const auto& prior : database_->ReadAllPosePriors()) {
+    if (prior.corr_data_id.sensor_id.type != SensorType::CAMERA) {
+      continue;
+    }
+
+    const auto& image = database_->ReadImage(prior.corr_data_id.id);
 
     QTableWidgetItem* id_item =
         new QTableWidgetItem(QString::number(image.ImageId()));
@@ -811,10 +669,18 @@ void PosePriorsTab::Reload(const std::shared_ptr<Database>& database) {
         row_idx,
         10,
         new QTableWidgetItem(QString::number(prior.position_covariance(1, 2))));
+
+    table_widget_->setItem(
+        row_idx, 11, new QTableWidgetItem(QString::number(prior.gravity[0])));
+    table_widget_->setItem(
+        row_idx, 12, new QTableWidgetItem(QString::number(prior.gravity[1])));
+    table_widget_->setItem(
+        row_idx, 13, new QTableWidgetItem(QString::number(prior.gravity[2])));
+
     ++row_idx;
   }
-  table_widget_->resizeColumnsToContents();
 
+  table_widget_->resizeColumnsToContents();
   table_widget_->blockSignals(false);
 }
 

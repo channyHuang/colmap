@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include "pycolmap/helpers.h"
 
 #include <ceres/ceres.h>
@@ -123,6 +125,8 @@ void BindCeresTypes(py::module& m) {
                  ceres::SparseLinearAlgebraLibraryType::EIGEN_SPARSE)
           .value("ACCELERATE_SPARSE",
                  ceres::SparseLinearAlgebraLibraryType::ACCELERATE_SPARSE)
+          .value("CUDA_SPARSE",
+                 ceres::SparseLinearAlgebraLibraryType::CUDA_SPARSE)
           .value("NO_SPARSE", ceres::SparseLinearAlgebraLibraryType::NO_SPARSE);
   AddStringToEnumConstructor(slalt);
 
@@ -164,7 +168,12 @@ void BindCeresSolver(py::module& m) {
   py::classh<Options> PyOptions(m, "SolverOptions", py::module_local());
   PyOptions.def(py::init<>())
       .def(py::init<const Options&>())
-      .def("IsValid", &Options::IsValid)
+      .def("IsValid",
+           [](const Options& self) {
+             std::string error;
+             bool valid = self.IsValid(&error);
+             return std::make_pair(valid, error);
+           })
       .def_readwrite("minimizer_type", &Options::minimizer_type)
       .def_readwrite("line_search_direction_type",
                      &Options::line_search_direction_type)

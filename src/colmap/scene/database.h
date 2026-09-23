@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #pragma once
 
@@ -38,6 +11,7 @@
 #include "colmap/util/eigen_alignment.h"
 #include "colmap/util/types.h"
 
+#include <filesystem>
 #include <mutex>
 #include <vector>
 
@@ -45,12 +19,12 @@
 
 namespace colmap {
 
-typedef Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>
-    FeatureKeypointsBlob;
-typedef Eigen::Matrix<uint8_t, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>
-    FeatureDescriptorsBlob;
-typedef Eigen::Matrix<point2D_t, Eigen::Dynamic, 2, Eigen::RowMajor>
-    FeatureMatchesBlob;
+using FeatureKeypointsBlob =
+    Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+using FeatureDescriptorsBlob =
+    Eigen::Matrix<uint8_t, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+using FeatureMatchesBlob =
+    Eigen::Matrix<point2D_t, Eigen::Dynamic, 2, Eigen::RowMajor>;
 
 // Database class to read and write images, features, cameras, matches, etc.
 // from a SQLite database. The class is not thread-safe and must not be accessed
@@ -59,21 +33,26 @@ typedef Eigen::Matrix<point2D_t, Eigen::Dynamic, 2, Eigen::RowMajor>
 // and trailing `EndTransaction`.
 class Database {
  public:
+  Database() = default;
+
+  // Closes the database, if not closed before.
+  virtual ~Database() = 0;
+
+  NON_COPYABLE(Database);
+
   // Factory function to create a database implementation for a given path.
   // The factory should be robust to handle non-supported files and return a
   // runtime_error in that case.
-  using Factory = std::function<std::shared_ptr<Database>(const std::string&)>;
+  using Factory =
+      std::function<std::shared_ptr<Database>(const std::filesystem::path&)>;
 
   // Register a factory to open a database implementation. Database factories
   // are tried in reverse order of registration. In other words, later
   // registrations are tried first.
   static void Register(Factory factory);
 
-  // Closes the database, if not closed before.
-  virtual ~Database();
-
   // Open database and throw a runtime_error if none of the factories succeeds.
-  static std::shared_ptr<Database> Open(const std::string& path);
+  static std::shared_ptr<Database> Open(const std::filesystem::path& path);
 
   // Explicitly close the database before destruction.
   virtual void Close() = 0;
@@ -85,7 +64,8 @@ class Database {
   virtual bool ExistsFrame(frame_t frame_id) const = 0;
   virtual bool ExistsImage(image_t image_id) const = 0;
   virtual bool ExistsImageWithName(const std::string& name) const = 0;
-  virtual bool ExistsPosePrior(image_t image_id) const = 0;
+  virtual bool ExistsPosePrior(pose_prior_t pose_prior_id,
+                               bool is_deprecated_image_prior = true) const = 0;
   virtual bool ExistsKeypoints(image_t image_id) const = 0;
   virtual bool ExistsDescriptors(image_t image_id) const = 0;
   virtual bool ExistsMatches(image_t image_id1, image_t image_id2) const = 0;
@@ -158,7 +138,10 @@ class Database {
       const std::string& name) const = 0;
   virtual std::vector<Image> ReadAllImages() const = 0;
 
-  virtual PosePrior ReadPosePrior(image_t image_id) const = 0;
+  virtual PosePrior ReadPosePrior(
+      pose_prior_t pose_prior_id,
+      bool is_deprecated_image_prior = true) const = 0;
+  virtual std::vector<PosePrior> ReadAllPosePriors() const = 0;
 
   virtual FeatureKeypointsBlob ReadKeypointsBlob(image_t image_id) const = 0;
   virtual FeatureKeypoints ReadKeypoints(image_t image_id) const = 0;
@@ -201,11 +184,14 @@ class Database {
   // is false a new identifier is automatically generated.
   virtual image_t WriteImage(const Image& image, bool use_image_id = false) = 0;
 
+  // Add new pose prior and return its database identifier. If
+  // `use_pose_prior_id` is false a new identifier is automatically generated.
+  virtual pose_prior_t WritePosePrior(const PosePrior& pose_prior,
+                                      bool use_pose_prior_id = false) = 0;
+
   // Write a new entry in the database. The user is responsible for making sure
   // that the entry does not yet exist. For image pairs, the order of
   // `image_id1` and `image_id2` does not matter.
-  virtual void WritePosePrior(image_t image_id,
-                              const PosePrior& pose_prior) = 0;
   virtual void WriteKeypoints(image_t image_id,
                               const FeatureKeypoints& keypoints) = 0;
   virtual void WriteKeypoints(image_t image_id,
@@ -241,8 +227,7 @@ class Database {
 
   // Update an existing pose_prior in the database. The user is responsible for
   // making sure that the entry already exists.
-  virtual void UpdatePosePrior(image_t image_id,
-                               const PosePrior& pose_prior) = 0;
+  virtual void UpdatePosePrior(const PosePrior& pose_prior) = 0;
 
   // Update an existing image's keypoints in the database. The user is
   // responsible for making sure that the entry already exists.
@@ -333,5 +318,9 @@ class DatabaseTransaction {
   Database* database_;
   std::unique_lock<std::mutex> database_lock_;
 };
+
+// Loads random descriptors from random images in the database.
+FeatureDescriptorsFloat LoadRandomDatabaseDescriptors(const Database& database,
+                                                      int max_num_descriptors);
 
 }  // namespace colmap

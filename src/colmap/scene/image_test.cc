@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/scene/image.h"
 
@@ -64,11 +37,12 @@ TEST(Image, Print) {
   Image image;
   image.SetImageId(1);
   image.SetCameraId(2);
+  image.SetFrameId(3);
   image.SetName("test");
   std::ostringstream stream;
   stream << image;
   EXPECT_EQ(stream.str(),
-            "Image(image_id=1, camera_id=2, name=\"test\", "
+            "Image(image_id=1, camera_id=2, frame_id=3, name=\"test\", "
             "has_pose=0, triangulated=0/0)");
 }
 
@@ -155,9 +129,9 @@ TEST(Image, SetResetPose) {
   EXPECT_ANY_THROW(image.CamFromWorld());
   frame.SetRigFromWorld(Rigid3d());
   EXPECT_TRUE(image.HasPose());
-  EXPECT_EQ(image.CamFromWorld().rotation.coeffs(),
+  EXPECT_EQ(image.CamFromWorld().rotation().coeffs(),
             Eigen::Quaterniond::Identity().coeffs());
-  EXPECT_EQ(image.CamFromWorld().translation, Eigen::Vector3d::Zero());
+  EXPECT_EQ(image.CamFromWorld().translation(), Eigen::Vector3d::Zero());
   image.FramePtr()->ResetPose();
   EXPECT_FALSE(image.HasPose());
   EXPECT_ANY_THROW(image.CamFromWorld());
@@ -248,7 +222,7 @@ TEST(Image, Points2DWith3D) {
   std::vector<Point2D> points2D(10);
   points2D[0].xy = Eigen::Vector2d(1.0, 2.0);
   points2D[0].point3D_id = 1;
-  image.SetPoints2D(points2D);
+  image.SetPoints2D(std::move(points2D));
   EXPECT_EQ(image.Points2D().size(), 10);
   EXPECT_EQ(image.Point2D(0).xy(0), 1.0);
   EXPECT_EQ(image.Point2D(0).xy(1), 2.0);

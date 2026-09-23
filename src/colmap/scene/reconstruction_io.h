@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #pragma once
 
@@ -33,7 +6,7 @@
 #include "colmap/scene/reconstruction_io_binary.h"
 #include "colmap/scene/reconstruction_io_text.h"
 
-#include <iostream>
+#include <filesystem>
 
 #include <Eigen/Core>
 
@@ -45,7 +18,7 @@ namespace colmap {
 // it's using the mean focal length which will be inaccurate for camera models
 // with two focal lengths and distortion.
 bool ExportNVM(const Reconstruction& reconstruction,
-               const std::string& path,
+               const std::filesystem::path& path,
                bool skip_distortion = false);
 
 // Exports in CAM format which is a simple text file that contains pose
@@ -62,7 +35,7 @@ bool ExportNVM(const Reconstruction& reconstruction,
 // models with the caveat that it's using the mean focal length which will be
 // inaccurate for camera models with two focal lengths and distortion.
 bool ExportCam(const Reconstruction& reconstruction,
-               const std::string& path,
+               const std::filesystem::path& path,
                bool skip_distortion = false);
 
 // Exports in Recon3D format which consists of three text files with the
@@ -96,7 +69,7 @@ bool ExportCam(const Reconstruction& reconstruction,
 // caveat that it's using the mean focal length which will be inaccurate
 // for camera models with two focal lengths and distortion.
 bool ExportRecon3D(const Reconstruction& reconstruction,
-                   const std::string& path,
+                   const std::filesystem::path& path,
                    bool skip_distortion = false);
 
 // Exports in Bundler format https://www.cs.cornell.edu/~snavely/bundler/.
@@ -106,17 +79,18 @@ bool ExportRecon3D(const Reconstruction& reconstruction,
 // length which will be inaccurate for camera models with two focal lengths
 // and distortion.
 bool ExportBundler(const Reconstruction& reconstruction,
-                   const std::string& path,
-                   const std::string& list_path,
+                   const std::filesystem::path& path,
+                   const std::filesystem::path& list_path,
                    bool skip_distortion = false);
 
 // Exports 3D points only in PLY format.
-void ExportPLY(const Reconstruction& reconstruction, const std::string& path);
+void ExportPLY(const Reconstruction& reconstruction,
+               const std::filesystem::path& path);
 
 // Exports in VRML format https://en.wikipedia.org/wiki/VRML.
 void ExportVRML(const Reconstruction& reconstruction,
-                const std::string& images_path,
-                const std::string& points3D_path,
+                const std::filesystem::path& images_path,
+                const std::filesystem::path& points3D_path,
                 double image_scale,
                 const Eigen::Vector3d& image_rgb);
 

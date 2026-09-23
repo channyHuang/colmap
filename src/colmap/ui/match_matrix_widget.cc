@@ -1,33 +1,8 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/ui/match_matrix_widget.h"
+
+#include "colmap/util/hash_containers.h"
 
 namespace colmap {
 
@@ -52,12 +27,11 @@ void MatchMatrixWidget::Show() {
             });
 
   // Allocate the match matrix image.
-  Bitmap match_matrix;
-  match_matrix.Allocate(images.size(), images.size(), true);
+  Bitmap match_matrix(images.size(), images.size(), true);
   match_matrix.Fill(BitmapColor<uint8_t>(255));
 
   // Map image identifiers to match matrix locations.
-  std::unordered_map<image_t, size_t> image_id_to_idx;
+  NodeHashMap<image_t, size_t> image_id_to_idx;
   for (size_t idx = 0; idx < images.size(); ++idx) {
     image_id_to_idx.emplace(images[idx].ImageId(), idx);
   }
@@ -79,11 +53,9 @@ void MatchMatrixWidget::Show() {
       const auto [image_id1, image_id2] = PairIdToImagePair(pair_id);
       const size_t idx1 = image_id_to_idx.at(image_id1);
       const size_t idx2 = image_id_to_idx.at(image_id2);
-      const BitmapColor<float> color(255 * JetColormap::Red(value),
-                                     255 * JetColormap::Green(value),
-                                     255 * JetColormap::Blue(value));
-      match_matrix.SetPixel(idx1, idx2, color.Cast<uint8_t>());
-      match_matrix.SetPixel(idx2, idx1, color.Cast<uint8_t>());
+      const auto color = JetColormap::ToBitmapColor(value);
+      match_matrix.SetPixel(idx1, idx2, color);
+      match_matrix.SetPixel(idx2, idx1, color);
     }
   }
 

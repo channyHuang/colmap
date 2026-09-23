@@ -1,39 +1,14 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #pragma once
 
-#include "colmap/scene/database.h"
 #include "colmap/scene/database_cache.h"
 #include "colmap/scene/reconstruction.h"
 #include "colmap/sfm/incremental_mapper.h"
 #include "colmap/sfm/observation_manager.h"
+#include "colmap/util/hash_containers.h"
+
+#include <optional>
 
 namespace colmap {
 
@@ -47,8 +22,8 @@ class IncrementalMapperImpl {
       const IncrementalMapper::Options& options,
       const CorrespondenceGraph& correspondence_graph,
       const Reconstruction& reconstruction,
-      const std::unordered_map<image_t, size_t>& init_num_reg_trials,
-      const std::unordered_map<image_t, size_t>& num_registrations);
+      const FlatHashMap<image_t, size_t>& init_num_reg_trials,
+      const FlatHashMap<image_t, size_t>& num_registrations);
 
   // For a given first seed image, find other images that are connected to the
   // first image. Suitable second images have a large number of correspondences
@@ -59,26 +34,41 @@ class IncrementalMapperImpl {
       image_t image_id1,
       const CorrespondenceGraph& correspondence_graph,
       const Reconstruction& reconstruction,
-      const std::unordered_map<image_t, size_t>& num_registrations);
+      const FlatHashMap<image_t, size_t>& num_registrations);
+
+  // Result of selecting and/or estimating the initial image pair. On success,
+  // `camera1`/`camera2` carry the intrinsics estimated for the chosen pair by
+  // two-view solvers that recover them (e.g. the shared-focal solver, which
+  // sets both to the same camera), and are std::nullopt otherwise.
+  struct InitInfo {
+    image_t image_id1 = kInvalidImageId;
+    image_t image_id2 = kInvalidImageId;
+    Rigid3d cam2_from_cam1;
+    std::optional<Camera> camera1;
+    std::optional<Camera> camera2;
+  };
 
   // Implement IncrementalMapper::FindInitialImagePair
-  static bool FindInitialImagePair(
+  // Returns the selected pair, or std::nullopt if no suitable pair was found.
+  // `image_id1`/`image_id2` optionally constrain the search to a specific first
+  // and/or second image (kInvalidImageId leaves the respective image
+  // unconstrained).
+  static std::optional<InitInfo> FindInitialImagePair(
       const IncrementalMapper::Options& options,
       const DatabaseCache& database_cache,
       const Reconstruction& reconstruction,
-      const std::unordered_map<image_t, size_t>& init_num_reg_trials,
-      const std::unordered_map<image_t, size_t>& num_registrations,
-      std::unordered_set<image_pair_t>& init_image_pairs,
-      image_t& image_id1,
-      image_t& image_id2,
-      Rigid3d& cam2_from_cam1);
+      const FlatHashMap<image_t, size_t>& init_num_reg_trials,
+      const FlatHashMap<image_t, size_t>& num_registrations,
+      FlatHashSet<image_pair_t>& init_image_pairs,
+      image_t image_id1,
+      image_t image_id2);
 
   // Implement IncrementalMapper::FindNextImages
   static std::vector<image_t> FindNextImages(
       const IncrementalMapper::Options& options,
       const ObservationManager& obs_manager,
-      const std::unordered_set<image_t>& filtered_images,
-      std::unordered_map<image_t, size_t>& num_reg_trials,
+      const FlatHashSet<frame_t>& filtered_frames,
+      FlatHashMap<image_t, size_t>& num_reg_trials,
       bool structure_less = false);
 
   // Implement IncrementalMapper::FindLocalBundle
@@ -88,12 +78,13 @@ class IncrementalMapperImpl {
       const Reconstruction& reconstruction);
 
   // Implement IncrementalMapper::EstimateInitialTwoViewGeometry
-  static bool EstimateInitialTwoViewGeometry(
+  // Returns the estimated two-view geometry, or std::nullopt if the pair is
+  // unsuitable for initialization.
+  static std::optional<InitInfo> EstimateInitialTwoViewGeometry(
       const IncrementalMapper::Options& options,
       const DatabaseCache& database_cache,
       image_t image_id1,
-      image_t image_id2,
-      Rigid3d& cam2_from_cam1);
+      image_t image_id2);
 };
 
 }  // namespace colmap

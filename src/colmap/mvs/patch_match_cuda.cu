@@ -1,31 +1,11 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
+
+// NOTE: On Blackwell GPUs (CUDA compute >= 100), nvcc may miscompile the
+// SweepFromTopToBottom kernel at -O2/-O3 optimization levels, producing
+// all-zero normal maps and corrupted depth maps. The CMake build system
+// excludes sm_100+ architectures for this target and instead emits sm_90
+// PTX, which Blackwell GPUs JIT-compile at first launch.
+// See: https://github.com/colmap/colmap/issues/3514
 
 #define _USE_MATH_DEFINES
 
@@ -40,8 +20,8 @@
 #include <cstdint>
 #include <sstream>
 
-// The number of threads per Cuda thread. Warning: Do not change this value,
-// since the templated window sizes rely on this value.
+// The number of threads per Cuda thread block. Warning: Do not change this
+// value, since the templated window sizes rely on this value.
 #define THREADS_PER_BLOCK 32
 
 // We must not include "util/math.h" to avoid any Eigen includes here,
@@ -253,11 +233,12 @@ __device__ inline void ComputeViewingAngles(
   // Length of ray from reference image to point.
   const float RX_inv_norm = rsqrt(DotProduct3(point, point));
 
-  // Length of ray from source image to point.
+  // Length of ray from point to source image.
   const float SX_inv_norm = rsqrt(DotProduct3(SX, SX));
 
   *cos_incident_angle = DotProduct3(SX, normal) * SX_inv_norm;
-  *cos_triangulation_angle = DotProduct3(SX, point) * RX_inv_norm * SX_inv_norm;
+  *cos_triangulation_angle =
+      -DotProduct3(SX, point) * RX_inv_norm * SX_inv_norm;
 }
 
 __device__ inline void ComposeHomography(
@@ -405,6 +386,35 @@ struct LocalRefImage {
   const cudaTextureObject_t ref_image_texture_;
 };
 
+#if defined(__GFX9__)
+// AMD CDNA/gfx9 hardware cannot create a linear-filtered layered texture
+// (cudaCreateTextureObject returns hipErrorNotSupported), so on gfx9 device
+// code the source image texture is bound with cudaFilterModePoint (see the
+// runtime branch in InitSourceImages) and we emulate the hardware bilinear
+// fetch with four point samples. Non-normalized coordinates place texel
+// centers at integer+0.5; cudaAddressModeBorder returns 0 outside the image,
+// so out-of-range point samples reproduce the border blend. __GFX9__ is a
+// per-architecture device macro, so a fat binary still uses the hardware path
+// for its non-gfx9 (e.g. RDNA) device code.
+__device__ inline float SampleLayeredBilinear(const cudaTextureObject_t texture,
+                                              const float x,
+                                              const float y,
+                                              const int layer) {
+  const float px = x - 0.5f;
+  const float py = y - 0.5f;
+  const float fx = floorf(px);
+  const float fy = floorf(py);
+  const float wx = px - fx;
+  const float wy = py - fy;
+  const float c00 = tex2DLayered<float>(texture, fx + 0.5f, fy + 0.5f, layer);
+  const float c10 = tex2DLayered<float>(texture, fx + 1.5f, fy + 0.5f, layer);
+  const float c01 = tex2DLayered<float>(texture, fx + 0.5f, fy + 1.5f, layer);
+  const float c11 = tex2DLayered<float>(texture, fx + 1.5f, fy + 1.5f, layer);
+  return (c00 * (1.0f - wx) + c10 * wx) * (1.0f - wy) +
+         (c01 * (1.0f - wx) + c11 * wx) * wy;
+}
+#endif
+
 // The return values is 1 - NCC, so the range is [0, 2], the smaller the
 // value, the better the color consistency.
 template <int kWindowSize, int kWindowStep>
@@ -490,8 +500,13 @@ struct PhotoConsistencyCostComputer {
         const float norm_col_src = inv_z * col_src + 0.5f;
         const float norm_row_src = inv_z * row_src + 0.5f;
         const float ref_color = local_ref_image.data[ref_image_idx];
+#if defined(__GFX9__)
+        const float src_color = SampleLayeredBilinear(
+            src_images_texture_, norm_col_src, norm_row_src, src_image_idx);
+#else
         const float src_color = tex2DLayered<float>(
             src_images_texture_, norm_col_src, norm_row_src, src_image_idx);
+#endif
 
         const float bilateral_weight = bilateral_weight_computer_.Compute(
             row, col, ref_center_color, ref_color);
@@ -697,9 +712,8 @@ class LikelihoodComputer {
   // Compute the triangulation angle probability.
   __device__ inline float ComputeTriProb(
       const float cos_triangulation_angle) const {
-    const float abs_cos_triangulation_angle = abs(cos_triangulation_angle);
-    if (abs_cos_triangulation_angle > cos_min_triangulation_angle_) {
-      const float scaled = 1.0f - (1.0f - abs_cos_triangulation_angle) /
+    if (cos_triangulation_angle > cos_min_triangulation_angle_) {
+      const float scaled = 1.0f - (1.0f - cos_triangulation_angle) /
                                       (1.0f - cos_min_triangulation_angle_);
       const float likelihood = 1.0f - scaled * scaled;
       return min(1.0f, max(0.0f, likelihood));
@@ -790,9 +804,9 @@ class LikelihoodComputer {
   const float ncc_norm_factor_;
 };
 
-// Rotate normals by 90deg around z-axis in counter-clockwise direction.
-__global__ void InitNormalMap(GpuMat<float> normal_map,
-                              GpuMat<curandState> rand_state_map) {
+// Generate random normals for each pixel in the normal map.
+__global__ void InitNormalMap(GpuMatView<float> normal_map,
+                              GpuMatView<curandState> rand_state_map) {
   const int row = blockDim.y * blockIdx.y + threadIdx.y;
   const int col = blockDim.x * blockIdx.x + threadIdx.x;
   if (col < normal_map.GetWidth() && row < normal_map.GetHeight()) {
@@ -805,7 +819,7 @@ __global__ void InitNormalMap(GpuMat<float> normal_map,
 }
 
 // Rotate normals by 90deg around z-axis in counter-clockwise direction.
-__global__ void RotateNormalMap(GpuMat<float> normal_map) {
+__global__ void RotateNormalMap(GpuMatView<float> normal_map) {
   const int row = blockDim.y * blockIdx.y + threadIdx.y;
   const int col = blockDim.x * blockIdx.x + threadIdx.x;
   if (col < normal_map.GetWidth() && row < normal_map.GetHeight()) {
@@ -820,16 +834,17 @@ __global__ void RotateNormalMap(GpuMat<float> normal_map) {
 }
 
 template <int kWindowSize, int kWindowStep>
-__global__ void ComputeInitialCost(GpuMat<float> cost_map,
-                                   const GpuMat<float> depth_map,
-                                   const GpuMat<float> normal_map,
-                                   const cudaTextureObject_t ref_image_texture,
-                                   const GpuMat<float> ref_sum_image,
-                                   const GpuMat<float> ref_squared_sum_image,
-                                   const cudaTextureObject_t src_images_texture,
-                                   const cudaTextureObject_t poses_texture,
-                                   const float sigma_spatial,
-                                   const float sigma_color) {
+__global__ void ComputeInitialCost(
+    GpuMatView<float> cost_map,
+    const GpuMatView<float> depth_map,
+    const GpuMatView<float> normal_map,
+    const cudaTextureObject_t ref_image_texture,
+    const GpuMatView<float> ref_sum_image,
+    const GpuMatView<float> ref_squared_sum_image,
+    const cudaTextureObject_t src_images_texture,
+    const cudaTextureObject_t poses_texture,
+    const float sigma_spatial,
+    const float sigma_color) {
   const int col = blockDim.x * blockIdx.x + threadIdx.x;
 
   typedef PhotoConsistencyCostComputer<kWindowSize, kWindowStep>
@@ -894,17 +909,17 @@ template <int kWindowSize,
           bool kFilterPhotoConsistency = false,
           bool kFilterGeomConsistency = false>
 __global__ void SweepFromTopToBottom(
-    GpuMat<float> global_workspace,
-    GpuMat<curandState> rand_state_map,
-    GpuMat<float> cost_map,
-    GpuMat<float> depth_map,
-    GpuMat<float> normal_map,
-    GpuMat<uint8_t> consistency_mask,
-    GpuMat<float> sel_prob_map,
-    const GpuMat<float> prev_sel_prob_map,
+    GpuMatView<float> global_workspace,
+    GpuMatView<curandState> rand_state_map,
+    GpuMatView<float> cost_map,
+    GpuMatView<float> depth_map,
+    GpuMatView<float> normal_map,
+    GpuMatView<uint8_t> consistency_mask,
+    GpuMatView<float> sel_prob_map,
+    const GpuMatView<float> prev_sel_prob_map,
     const cudaTextureObject_t ref_image_texture,
-    const GpuMat<float> ref_sum_image,
-    const GpuMat<float> ref_squared_sum_image,
+    const GpuMatView<float> ref_sum_image,
+    const GpuMatView<float> ref_squared_sum_image,
     const cudaTextureObject_t src_images_texture,
     const cudaTextureObject_t src_depth_maps_texture,
     const cudaTextureObject_t poses_texture,
@@ -1305,8 +1320,8 @@ void PatchMatchCuda::Run() {
     }
   }
 
-#undef SWITCH_WINDOW_RADIUS
-#undef CALL_RUN_FUNC
+#undef CASE_WINDOW_RADIUS
+#undef CASE_WINDOW_STEP
 }
 
 DepthMap PatchMatchCuda::GetDepthMap() const {
@@ -1358,16 +1373,17 @@ void PatchMatchCuda::RunWithWindowSizeAndStep() {
 
   ComputeCudaConfig();
   ComputeInitialCost<kWindowSize, kWindowStep>
-      <<<sweep_grid_size_, sweep_block_size_>>>(*cost_map_,
-                                                *depth_map_,
-                                                *normal_map_,
-                                                ref_image_texture_->GetObj(),
-                                                *ref_image_->sum_image,
-                                                *ref_image_->squared_sum_image,
-                                                src_images_texture_->GetObj(),
-                                                poses_texture_[0]->GetObj(),
-                                                options_.sigma_spatial,
-                                                options_.sigma_color);
+      <<<sweep_grid_size_, sweep_block_size_>>>(
+          cost_map_->View(),
+          depth_map_->View(),
+          normal_map_->View(),
+          ref_image_texture_->GetObj(),
+          ref_image_->sum_image->View(),
+          ref_image_->squared_sum_image->View(),
+          src_images_texture_->GetObj(),
+          poses_texture_[0]->GetObj(),
+          options_.sigma_spatial,
+          options_.sigma_color);
   CUDA_SYNC_AND_CHECK();
 
   init_timer.Print("Initialization");
@@ -1416,17 +1432,17 @@ void PatchMatchCuda::RunWithWindowSizeAndStep() {
                        kFilterPhotoConsistency,           \
                        kFilterGeomConsistency>            \
       <<<sweep_grid_size_, sweep_block_size_>>>(          \
-          *global_workspace_,                             \
-          *rand_state_map_,                               \
-          *cost_map_,                                     \
-          *depth_map_,                                    \
-          *normal_map_,                                   \
-          *consistency_mask_,                             \
-          *sel_prob_map_,                                 \
-          *prev_sel_prob_map_,                            \
+          global_workspace_->View(),                      \
+          rand_state_map_->View(),                        \
+          cost_map_->View(),                              \
+          depth_map_->View(),                             \
+          normal_map_->View(),                            \
+          consistency_mask_->View(),                      \
+          sel_prob_map_->View(),                          \
+          prev_sel_prob_map_->View(),                     \
           ref_image_texture_->GetObj(),                   \
-          *ref_image_->sum_image,                         \
-          *ref_image_->squared_sum_image,                 \
+          ref_image_->sum_image->View(),                  \
+          ref_image_->squared_sum_image->View(),          \
           src_images_texture_->GetObj(),                  \
           src_depth_maps_texture_ == nullptr              \
               ? 0                                         \
@@ -1436,9 +1452,10 @@ void PatchMatchCuda::RunWithWindowSizeAndStep() {
 
       if (last_sweep) {
         if (options_.filter) {
-          consistency_mask_.reset(new GpuMat<uint8_t>(cost_map_->GetWidth(),
-                                                      cost_map_->GetHeight(),
-                                                      cost_map_->GetDepth()));
+          consistency_mask_ =
+              std::make_unique<GpuMat<uint8_t>>(cost_map_->GetWidth(),
+                                                cost_map_->GetHeight(),
+                                                cost_map_->GetDepth());
           consistency_mask_->FillWithScalar(0);
         }
         if (options_.geom_consistency) {
@@ -1538,10 +1555,8 @@ void PatchMatchCuda::InitRefImage() {
   ref_height_ = ref_image.GetHeight();
 
   // Upload to device and filter.
-  ref_image_.reset(new GpuMatRefImage(ref_width_, ref_height_));
-  const std::vector<uint8_t> ref_image_array =
-      ref_image.GetBitmap().ConvertToRowMajorArray();
-  ref_image_->Filter(ref_image_array.data(),
+  ref_image_ = std::make_unique<GpuMatRefImage>(ref_width_, ref_height_);
+  ref_image_->Filter(ref_image.GetBitmap().RowMajorData().data(),
                      options_.window_radius,
                      options_.window_step,
                      options_.sigma_spatial,
@@ -1575,9 +1590,17 @@ void PatchMatchCuda::InitSourceImages() {
     for (size_t i = 0; i < problem_.src_image_idxs.size(); ++i) {
       const Image& image = problem_.images->at(problem_.src_image_idxs[i]);
       const Bitmap& bitmap = image.GetBitmap();
+      // The texture reads each layer with a row stride of max_width, while
+      // the bitmap rows are packed with the image's own width. Images
+      // narrower than max_width must therefore be copied row by row - a
+      // single contiguous copy would displace row r by r * (max_width -
+      // width) pixels. Example for a 2x2 image in a 3-wide layer:
+      //   bitmap [a b; c d] -> contiguous copy [a b c; d 0 0] (wrong)
+      //                        row-wise copy   [a b 0; c d 0] (correct)
+      const uint8_t* src = bitmap.RowMajorData().data();
       uint8_t* dest = src_images_host_data.data() + max_width * max_height * i;
       for (size_t r = 0; r < image.GetHeight(); ++r) {
-        memcpy(dest, bitmap.GetScanline(r), image.GetWidth() * sizeof(uint8_t));
+        memcpy(dest, src + r * image.GetWidth(), image.GetWidth());
         dest += max_width;
       }
     }
@@ -1589,6 +1612,21 @@ void PatchMatchCuda::InitSourceImages() {
     texture_desc.addressMode[1] = cudaAddressModeBorder;
     texture_desc.addressMode[2] = cudaAddressModeBorder;
     texture_desc.filterMode = cudaFilterModeLinear;
+#ifdef COLMAP_HIP_ENABLED
+    // AMD CDNA/gfx9 GPUs do not support linear filtering of layered textures.
+    // Detect the actual device at runtime (so a binary built for several
+    // architectures still picks the right path per GPU) and fall back to point
+    // filtering there; the gfx9 device code emulates bilinear filtering in the
+    // kernel (see SampleLayeredBilinear). Non-gfx9 GPUs keep hardware
+    // filtering.
+    int device = 0;
+    CUDA_SAFE_CALL(cudaGetDevice(&device));
+    cudaDeviceProp device_prop;
+    CUDA_SAFE_CALL(cudaGetDeviceProperties(&device_prop, device));
+    if (std::string(device_prop.gcnArchName).rfind("gfx9", 0) == 0) {
+      texture_desc.filterMode = cudaFilterModePoint;
+    }
+#endif
     texture_desc.readMode = cudaReadModeNormalizedFloat;
     texture_desc.normalizedCoords = false;
     src_images_texture_ = CudaArrayLayeredTexture<uint8_t>::FromHostArray(
@@ -1754,9 +1792,9 @@ void PatchMatchCuda::InitTransforms() {
 }
 
 void PatchMatchCuda::InitWorkspaceMemory() {
-  rand_state_map_.reset(new GpuMatPRNG(ref_width_, ref_height_));
+  rand_state_map_ = std::make_unique<GpuMatPRNG>(ref_width_, ref_height_);
 
-  depth_map_.reset(new GpuMat<float>(ref_width_, ref_height_));
+  depth_map_ = std::make_unique<GpuMat<float>>(ref_width_, ref_height_);
   if (options_.geom_consistency) {
     const DepthMap& init_depth_map =
         problem_.depth_maps->at(problem_.ref_image_idx);
@@ -1767,27 +1805,27 @@ void PatchMatchCuda::InitWorkspaceMemory() {
         options_.depth_min, options_.depth_max, *rand_state_map_);
   }
 
-  normal_map_.reset(new GpuMat<float>(ref_width_, ref_height_, 3));
+  normal_map_ = std::make_unique<GpuMat<float>>(ref_width_, ref_height_, 3);
 
   // Note that it is not necessary to keep the selection probability map in
   // memory for all pixels. Theoretically, it is possible to incorporate
   // the temporary selection probabilities in the global_workspace_.
   // However, it is useful to keep the probabilities for the entire image
   // in memory, so that it can be exported.
-  sel_prob_map_.reset(new GpuMat<float>(
-      ref_width_, ref_height_, problem_.src_image_idxs.size()));
-  prev_sel_prob_map_.reset(new GpuMat<float>(
-      ref_width_, ref_height_, problem_.src_image_idxs.size()));
+  sel_prob_map_ = std::make_unique<GpuMat<float>>(
+      ref_width_, ref_height_, problem_.src_image_idxs.size());
+  prev_sel_prob_map_ = std::make_unique<GpuMat<float>>(
+      ref_width_, ref_height_, problem_.src_image_idxs.size());
   prev_sel_prob_map_->FillWithScalar(0.5f);
 
-  cost_map_.reset(new GpuMat<float>(
-      ref_width_, ref_height_, problem_.src_image_idxs.size()));
+  cost_map_ = std::make_unique<GpuMat<float>>(
+      ref_width_, ref_height_, problem_.src_image_idxs.size());
 
   const int ref_max_dim = std::max(ref_width_, ref_height_);
-  global_workspace_.reset(
-      new GpuMat<float>(ref_max_dim, problem_.src_image_idxs.size(), 2));
+  global_workspace_ = std::make_unique<GpuMat<float>>(
+      ref_max_dim, problem_.src_image_idxs.size(), 2);
 
-  consistency_mask_.reset(new GpuMat<uint8_t>(0, 0, 0));
+  consistency_mask_ = std::make_unique<GpuMat<uint8_t>>(0, 0, 0);
 
   ComputeCudaConfig();
 
@@ -1798,7 +1836,7 @@ void PatchMatchCuda::InitWorkspaceMemory() {
                               init_normal_map.GetWidth() * sizeof(float));
   } else {
     InitNormalMap<<<elem_wise_grid_size_, elem_wise_block_size_>>>(
-        *normal_map_, *rand_state_map_);
+        normal_map_->View(), rand_state_map_->View());
   }
 }
 
@@ -1834,7 +1872,7 @@ void PatchMatchCuda::Rotate() {
   // Rotate normal map.
   {
     RotateNormalMap<<<elem_wise_grid_size_, elem_wise_block_size_>>>(
-        *normal_map_);
+        normal_map_->View());
     std::unique_ptr<GpuMat<float>> rotated_normal_map(
         new GpuMat<float>(width, height, 3));
     normal_map_->Rotate(rotated_normal_map.get());
@@ -1854,11 +1892,11 @@ void PatchMatchCuda::Rotate() {
   }
 
   // Rotate selection probability map.
-  prev_sel_prob_map_.reset(
-      new GpuMat<float>(width, height, problem_.src_image_idxs.size()));
+  prev_sel_prob_map_ = std::make_unique<GpuMat<float>>(
+      width, height, problem_.src_image_idxs.size());
   sel_prob_map_->Rotate(prev_sel_prob_map_.get());
-  sel_prob_map_.reset(
-      new GpuMat<float>(width, height, problem_.src_image_idxs.size()));
+  sel_prob_map_ = std::make_unique<GpuMat<float>>(
+      width, height, problem_.src_image_idxs.size());
 
   // Rotate cost map.
   {

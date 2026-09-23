@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/estimators/coordinate_frame.h"
 
@@ -33,6 +6,7 @@
 #include "colmap/geometry/pose.h"
 #include "colmap/image/line.h"
 #include "colmap/image/undistortion.h"
+#include "colmap/math/math.h"
 #include "colmap/optim/ransac.h"
 #include "colmap/util/logging.h"
 #include "colmap/util/misc.h"
@@ -100,7 +74,7 @@ Eigen::Vector3d EstimateGravityVectorFromImageOrientation(
   for (const auto image_id : reconstruction.RegImageIds()) {
     const auto& image = reconstruction.Image(image_id);
     downward_axes.push_back(
-        image.CamFromWorld().rotation.toRotationMatrix().row(1));
+        image.CamFromWorld().rotation().toRotationMatrix().row(1));
   }
   return FindBestConsensusAxis(downward_axes, max_axis_distance);
 }
@@ -109,11 +83,11 @@ Eigen::Vector3d EstimateGravityVectorFromImageOrientation(
 
 struct VanishingPointEstimator {
   // The line segments.
-  typedef LineSegment X_t;
+  using X_t = LineSegment;
   // The line representation of the segments.
-  typedef Eigen::Vector3d Y_t;
+  using Y_t = Eigen::Vector3d;
   // The vanishing point.
-  typedef Eigen::Vector3d M_t;
+  using M_t = Eigen::Vector3d;
 
   // The minimum number of samples needed to estimate a model.
   static const int kMinNumSamples = 2;
@@ -160,7 +134,7 @@ struct VanishingPointEstimator {
 Eigen::Matrix3d EstimateManhattanWorldFrame(
     const ManhattanWorldFrameEstimationOptions& options,
     const Reconstruction& reconstruction,
-    const std::string& image_path) {
+    const std::filesystem::path& image_path) {
   std::vector<Eigen::Vector3d> rightward_axes;
   std::vector<Eigen::Vector3d> downward_axes;
   size_t image_idx = 0;
@@ -168,15 +142,15 @@ Eigen::Matrix3d EstimateManhattanWorldFrame(
     const auto& image = reconstruction.Image(image_id);
     const auto& camera = *image.CameraPtr();
 
-    PrintHeading1(StringPrintf("Processing image %s (%d / %d)",
-                               image.Name().c_str(),
-                               ++image_idx,
-                               reconstruction.NumRegImages()));
+    LOG_HEADING1(StringPrintf("Processing image %s (%d / %d)",
+                              image.Name().c_str(),
+                              ++image_idx,
+                              reconstruction.NumRegImages()));
 
     LOG(INFO) << "Reading image...";
 
-    colmap::Bitmap bitmap;
-    THROW_CHECK(bitmap.Read(colmap::JoinPaths(image_path, image.Name())));
+    Bitmap bitmap;
+    THROW_CHECK(bitmap.Read(image_path / image.Name()));
 
     LOG(INFO) << "Undistorting image...";
 
@@ -243,7 +217,7 @@ Eigen::Matrix3d EstimateManhattanWorldFrame(
     const Eigen::Matrix3d inv_calib_matrix =
         undistorted_camera.CalibrationMatrix().inverse();
     const Eigen::Quaterniond world_from_cam_rotation =
-        image.CamFromWorld().rotation.inverse();
+        image.CamFromWorld().rotation().inverse();
 
     if (horizontal_report.success) {
       Eigen::Vector3d horizontal_axis_in_world =
@@ -273,7 +247,7 @@ Eigen::Matrix3d EstimateManhattanWorldFrame(
     }
   }
 
-  PrintHeading1("Computing coordinate frame");
+  LOG_HEADING1("Computing coordinate frame");
 
   Eigen::Matrix3d frame = Eigen::Matrix3d::Zero();
 
@@ -341,7 +315,7 @@ void AlignToPrincipalPlane(Reconstruction* reconstruction,
   const Rigid3d cam0_from_aligned_world = TransformCameraWorld(
       *aligned_from_original,
       reconstruction->Image(frame0_image_ids.begin()->id).CamFromWorld());
-  if (Inverse(cam0_from_aligned_world).translation.z() < 0.0) {
+  if (Inverse(cam0_from_aligned_world).translation().z() < 0.0) {
     rot_mat << basis.col(0), -basis.col(1), basis.col(0).cross(-basis.col(1));
     rot_mat.transposeInPlace();
     *aligned_from_original =
@@ -370,7 +344,7 @@ void AlignToENUPlane(Reconstruction* reconstruction,
   rot_mat << -sin_lon, cos_lon, 0, -cos_lon * sin_lat, -sin_lon * sin_lat,
       cos_lat, cos_lon * cos_lat, sin_lon * cos_lat, sin_lat;
 
-  const double scale = unscaled ? 1.0 / aligned_from_original->scale : 1.0;
+  const double scale = unscaled ? 1.0 / aligned_from_original->scale() : 1.0;
   *aligned_from_original =
       Sim3d(scale, Eigen::Quaterniond(rot_mat), -scale * rot_mat * centroid);
   reconstruction->Transform(*aligned_from_original);

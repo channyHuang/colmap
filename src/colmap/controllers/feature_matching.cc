@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/controllers/feature_matching.h"
 
@@ -35,6 +8,7 @@
 #include "colmap/feature/utils.h"
 #include "colmap/scene/database.h"
 #include "colmap/util/file.h"
+#include "colmap/util/hash_containers.h"
 #include "colmap/util/misc.h"
 #include "colmap/util/timer.h"
 
@@ -47,21 +21,27 @@ void RigVerification(const std::shared_ptr<Database>& database,
                      const std::shared_ptr<FeatureMatcherCache>& cache,
                      const TwoViewGeometryOptions& geometry_options,
                      const int num_threads) {
-  std::unordered_map<rig_t, Rig> rigs;
+  NodeHashMap<rig_t, Rig> rigs;
   for (auto& rig : database->ReadAllRigs()) {
     rigs[rig.RigId()] = std::move(rig);
   }
 
-  std::unordered_map<image_t, frame_t> image_to_frame_ids;
+  NodeHashMap<image_t, frame_t> image_to_frame_ids;
   for (const auto& frame : database->ReadAllFrames()) {
     for (const data_t& data_id : frame.ImageIds()) {
       image_to_frame_ids[data_id.id] = frame.FrameId();
     }
   }
 
-  std::map<std::pair<frame_t, frame_t>, int> frame_pair_to_num_matches;
-  for (const auto& [image_pair_id, num_matches] : database->ReadNumMatches()) {
-    if (num_matches == 0) {
+  struct FramePairStats {
+    int num_image_pairs = 0;
+    int num_matches = 0;
+  };
+
+  std::map<std::pair<frame_t, frame_t>, FramePairStats> frame_pair_stats;
+  for (const auto& [image_pair_id, pair_num_matches] :
+       database->ReadNumMatches()) {
+    if (pair_num_matches == 0) {
       continue;
     }
     const auto [image_id1, image_id2] = PairIdToImagePair(image_pair_id);
@@ -70,13 +50,18 @@ void RigVerification(const std::shared_ptr<Database>& database,
     if (frame_id1 > frame_id2) {
       std::swap(frame_id1, frame_id2);
     }
-    frame_pair_to_num_matches[std::make_pair(frame_id1, frame_id2)] +=
-        num_matches;
+    auto& stats = frame_pair_stats[{frame_id1, frame_id2}];
+    stats.num_image_pairs += 1;
+    stats.num_matches += pair_num_matches;
   }
 
   ThreadPool thread_pool(num_threads);
-  for (const auto& [frame_pair, num_matches] : frame_pair_to_num_matches) {
-    if (num_matches < geometry_options.min_num_inliers) {
+  for (const auto& [frame_pair, stats] : frame_pair_stats) {
+    // If the frame pair has only matches between one pair of images, then
+    // there is no need to run rig verification, as there are no rig
+    // constraints.
+    if (stats.num_image_pairs <= 1 ||
+        stats.num_matches < geometry_options.min_num_inliers) {
       continue;
     }
     thread_pool.AddTask([&cache,
@@ -88,13 +73,10 @@ void RigVerification(const std::shared_ptr<Database>& database,
       const Frame& frame2 = cache->GetFrame(frame_id2);
       const Rig& rig1 = rigs.at(frame1.RigId());
       const Rig& rig2 = rigs.at(frame2.RigId());
-      if (rig1.NumSensors() == 1 && rig2.NumSensors() == 1) {
-        return;
-      }
 
-      std::unordered_map<image_t, Image> images;
+      NodeHashMap<image_t, Image> images;
       images.reserve(frame1.NumDataIds() + frame2.NumDataIds());
-      std::unordered_map<camera_t, Camera> cameras;
+      NodeHashMap<camera_t, Camera> cameras;
       cameras.reserve(images.size());
       auto add_images_and_cameras = [&cache, &images, &cameras](
                                         const Frame& frame) {
@@ -112,13 +94,22 @@ void RigVerification(const std::shared_ptr<Database>& database,
       std::vector<std::pair<std::pair<image_t, image_t>, FeatureMatches>>
           matches;
       matches.reserve(frame1.NumDataIds() * frame2.NumDataIds());
-      for (const data_t& image_id1 : frame1.ImageIds()) {
-        for (const data_t& image_id2 : frame2.ImageIds()) {
-          if (!cache->ExistsMatches(image_id1.id, image_id2.id)) {
+      for (const data_t& data_id1 : frame1.ImageIds()) {
+        const image_t image_id1 = data_id1.id;
+        for (const data_t& data_id2 : frame2.ImageIds()) {
+          const image_t image_id2 = data_id2.id;
+          // If verifying within the same frame, then skip redundant image
+          // pairs, whereas different frames are guaranteed to have different
+          // image pairs. Note that verifying within the same frame can be
+          // useful when the images have some overlap but the matches between
+          // image pairs are not enough alone but accumulating them over the
+          // whole frame can lead to a successful verification.
+          if ((frame_id1 == frame_id2 && image_id1 <= image_id2) ||
+              !cache->ExistsMatches(image_id1, image_id2)) {
             continue;
           }
-          matches.emplace_back(std::make_pair(image_id1.id, image_id2.id),
-                               cache->GetMatches(image_id1.id, image_id2.id));
+          matches.emplace_back(std::make_pair(image_id1, image_id2),
+                               cache->GetMatches(image_id1, image_id2));
         }
       }
 
@@ -126,7 +117,7 @@ void RigVerification(const std::shared_ptr<Database>& database,
            EstimateRigTwoViewGeometries(
                rig1, rig2, images, cameras, matches, geometry_options)) {
         const auto& [image_id1, image_id2] = image_pair;
-        cache->DeleteInlierMatches(image_id1, image_id2);
+        cache->DeleteTwoViewGeometry(image_id1, image_id2);
         cache->WriteTwoViewGeometry(image_id1, image_id2, two_view_geometry);
       }
     });
@@ -142,7 +133,7 @@ class FeatureMatcherThread : public Thread {
       const typename PairGeneratorType::PairingOptions& pairing_options,
       const FeatureMatchingOptions& matching_options,
       const TwoViewGeometryOptions& geometry_options,
-      const std::string& database_path) {
+      const std::filesystem::path& database_path) {
     auto database = Database::Open(database_path);
     auto cache = std::make_shared<FeatureMatcherCache>(
         pairing_options.CacheSize(), database);
@@ -175,7 +166,7 @@ class FeatureMatcherThread : public Thread {
 
  private:
   void Run() override {
-    PrintHeading1("Feature matching & geometric verification");
+    LOG_HEADING1("Feature matching & geometric verification");
 
     Timer run_timer;
     run_timer.Start();
@@ -206,9 +197,10 @@ class FeatureMatcherThread : public Thread {
     // feature matching operates on pairs of images instead of pairs of frames.
     // Rig verification operates on pairs of frames and we require all image
     // pairs between two frames to be matched before running rig verification.
-    if (matching_options_.rig_verification) {
+    if (!matching_options_.skip_geometric_verification &&
+        matching_options_.rig_verification) {
       run_timer.Restart();
-      PrintHeading1("Rig verification");
+      LOG_HEADING1("Rig verification");
       RigVerification(
           database_, cache_, geometry_options_, matching_options_.num_threads);
       run_timer.PrintMinutes();
@@ -230,7 +222,7 @@ class GeometricVerifierThread : public Thread {
       const GeometricVerifierOptions& verifier_options,
       const typename PairGeneratorType::PairingOptions& pairing_options,
       const TwoViewGeometryOptions& geometry_options,
-      const std::string& database_path) {
+      const std::filesystem::path& database_path) {
     auto database = Database::Open(database_path);
     auto cache = std::make_shared<FeatureMatcherCache>(
         pairing_options.CacheSize(), database);
@@ -261,7 +253,7 @@ class GeometricVerifierThread : public Thread {
 
  private:
   void Run() override {
-    PrintHeading1("Geometric verification");
+    LOG_HEADING1("Geometric verification");
 
     Timer run_timer;
     run_timer.Start();
@@ -288,7 +280,7 @@ class GeometricVerifierThread : public Thread {
 
     if (verifier_.Options().rig_verification) {
       run_timer.Restart();
-      PrintHeading1("Rig verification");
+      LOG_HEADING1("Rig verification");
       RigVerification(database_,
                       cache_,
                       geometry_options_,
@@ -312,7 +304,7 @@ std::unique_ptr<Thread> CreateExhaustiveFeatureMatcher(
     const ExhaustivePairingOptions& pairing_options,
     const FeatureMatchingOptions& matching_options,
     const TwoViewGeometryOptions& geometry_options,
-    const std::string& database_path) {
+    const std::filesystem::path& database_path) {
   return FeatureMatcherThread::Create<ExhaustivePairGenerator>(
       pairing_options, matching_options, geometry_options, database_path);
 }
@@ -321,7 +313,7 @@ std::unique_ptr<Thread> CreateVocabTreeFeatureMatcher(
     const VocabTreePairingOptions& pairing_options,
     const FeatureMatchingOptions& matching_options,
     const TwoViewGeometryOptions& geometry_options,
-    const std::string& database_path) {
+    const std::filesystem::path& database_path) {
   return FeatureMatcherThread::Create<VocabTreePairGenerator>(
       pairing_options, matching_options, geometry_options, database_path);
 }
@@ -330,7 +322,7 @@ std::unique_ptr<Thread> CreateSequentialFeatureMatcher(
     const SequentialPairingOptions& pairing_options,
     const FeatureMatchingOptions& matching_options,
     const TwoViewGeometryOptions& geometry_options,
-    const std::string& database_path) {
+    const std::filesystem::path& database_path) {
   return FeatureMatcherThread::Create<SequentialPairGenerator>(
       pairing_options, matching_options, geometry_options, database_path);
 }
@@ -339,7 +331,7 @@ std::unique_ptr<Thread> CreateSpatialFeatureMatcher(
     const SpatialPairingOptions& pairing_options,
     const FeatureMatchingOptions& matching_options,
     const TwoViewGeometryOptions& geometry_options,
-    const std::string& database_path) {
+    const std::filesystem::path& database_path) {
   return FeatureMatcherThread::Create<SpatialPairGenerator>(
       pairing_options, matching_options, geometry_options, database_path);
 }
@@ -348,7 +340,7 @@ std::unique_ptr<Thread> CreateTransitiveFeatureMatcher(
     const TransitivePairingOptions& pairing_options,
     const FeatureMatchingOptions& matching_options,
     const TwoViewGeometryOptions& geometry_options,
-    const std::string& database_path) {
+    const std::filesystem::path& database_path) {
   return FeatureMatcherThread::Create<TransitivePairGenerator>(
       pairing_options, matching_options, geometry_options, database_path);
 }
@@ -357,7 +349,7 @@ std::unique_ptr<Thread> CreateImagePairsFeatureMatcher(
     const ImportedPairingOptions& pairing_options,
     const FeatureMatchingOptions& matching_options,
     const TwoViewGeometryOptions& geometry_options,
-    const std::string& database_path) {
+    const std::filesystem::path& database_path) {
   return FeatureMatcherThread::Create<ImportedPairGenerator>(
       pairing_options, matching_options, geometry_options, database_path);
 }
@@ -369,7 +361,7 @@ class FeaturePairsFeatureMatcher : public Thread {
   FeaturePairsFeatureMatcher(const FeaturePairsMatchingOptions& pairing_options,
                              const FeatureMatchingOptions& matching_options,
                              const TwoViewGeometryOptions& geometry_options,
-                             const std::string& database_path)
+                             const std::filesystem::path& database_path)
       : options_(pairing_options),
         matching_options_(matching_options),
         geometry_options_(geometry_options),
@@ -383,11 +375,11 @@ class FeaturePairsFeatureMatcher : public Thread {
 
  private:
   void Run() override {
-    PrintHeading1("Importing matches");
+    LOG_HEADING1("Importing matches");
     Timer run_timer;
     run_timer.Start();
 
-    std::unordered_map<std::string, const Image*> image_name_to_image;
+    NodeHashMap<std::string, const Image*> image_name_to_image;
     image_name_to_image.reserve(cache_->GetImageIds().size());
     for (const auto image_id : cache_->GetImageIds()) {
       const auto& image = cache_->GetImage(image_id);
@@ -396,6 +388,7 @@ class FeaturePairsFeatureMatcher : public Thread {
 
     std::ifstream file(options_.match_list_path);
     THROW_CHECK_FILE_OPEN(file, options_.match_list_path);
+    SetFullPrecTextStream(file);
 
     std::string line;
     while (std::getline(file, line)) {
@@ -410,6 +403,7 @@ class FeaturePairsFeatureMatcher : public Thread {
       }
 
       std::istringstream line_stream(line);
+      SetFullPrecTextStream(line_stream);
 
       std::string image_name1, image_name2;
       try {
@@ -452,6 +446,7 @@ class FeaturePairsFeatureMatcher : public Thread {
         }
 
         std::istringstream line_stream(line);
+        SetFullPrecTextStream(line_stream);
 
         FeatureMatch match;
         try {
@@ -517,7 +512,7 @@ std::unique_ptr<Thread> CreateFeaturePairsFeatureMatcher(
     const FeaturePairsMatchingOptions& pairing_options,
     const FeatureMatchingOptions& matching_options,
     const TwoViewGeometryOptions& geometry_options,
-    const std::string& database_path) {
+    const std::filesystem::path& database_path) {
   return std::make_unique<FeaturePairsFeatureMatcher>(
       pairing_options, matching_options, geometry_options, database_path);
 }
@@ -526,7 +521,7 @@ std::unique_ptr<Thread> CreateGeometricVerifier(
     const GeometricVerifierOptions& verifier_options,
     const ExistingMatchedPairingOptions& pairing_options,
     const TwoViewGeometryOptions& geometry_options,
-    const std::string& database_path) {
+    const std::filesystem::path& database_path) {
   return GeometricVerifierThread::Create<ExistingMatchedPairGenerator>(
       verifier_options, pairing_options, geometry_options, database_path);
 }

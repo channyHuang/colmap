@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #pragma once
 
@@ -57,14 +30,16 @@ class TriangulationEstimator {
   };
 
   struct PointData {
-    PointData() {}
-    PointData(const Eigen::Vector2d& img_point,
-              const Eigen::Vector2d& cam_point)
-        : img_point(img_point), cam_point(cam_point) {}
+    PointData() = default;
+    PointData(const Eigen::Vector2d& img_point, const Eigen::Vector3d& cam_ray)
+        : img_point(img_point), cam_ray(cam_ray) {}
     // Image observation in pixels. Only needs to be set for REPROJECTION_ERROR.
-    Eigen::Vector2d img_point;
-    // Normalized camera coordinates. Must always be set.
-    Eigen::Vector2d cam_point;
+    Eigen::Vector2d img_point = Eigen::Vector2d::Zero();
+    // Unit bearing vector in the camera frame (Camera::CamRayFromImg). The
+    // canonical observation representation for all camera models, including
+    // omnidirectional (EQUIRECTANGULAR) back-hemisphere rays that the 2D
+    // normalized representation cannot encode.
+    Eigen::Vector3d cam_ray = Eigen::Vector3d::Zero();
   };
 
   struct PoseData {
@@ -83,9 +58,9 @@ class TriangulationEstimator {
     const Camera* camera;
   };
 
-  typedef PointData X_t;
-  typedef PoseData Y_t;
-  typedef Eigen::Vector3d M_t;
+  using X_t = PointData;
+  using Y_t = PoseData;
+  using M_t = Eigen::Vector3d;
 
   TriangulationEstimator(double min_tri_angle, ResidualType residual_type);
 
@@ -94,8 +69,8 @@ class TriangulationEstimator {
 
   // Estimate a 3D point from a two-view observation.
   //
-  // @param point_data        Image measurement.
-  // @param point_data        Camera poses.
+  // @param point_data        Image measurements.
+  // @param pose_data         Camera poses.
   //
   // @return                  Triangulated point if successful, otherwise none.
   void Estimate(const std::vector<X_t>& point_data,
@@ -105,7 +80,7 @@ class TriangulationEstimator {
   // Calculate residuals in terms of squared reprojection or angular error.
   //
   // @param point_data        Image measurements.
-  // @param point_data        Camera poses.
+  // @param pose_data         Camera poses.
   // @param xyz               3D point.
   //
   // @return                  Residual for each observation.

@@ -1,32 +1,4 @@
-# Copyright (c), ETH Zurich and UNC Chapel Hill.
-# All rights reserved.
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-#     * Redistributions of source code must retain the above copyright
-#       notice, this list of conditions and the following disclaimer.
-#
-#     * Redistributions in binary form must reproduce the above copyright
-#       notice, this list of conditions and the following disclaimer in the
-#       documentation and/or other materials provided with the distribution.
-#
-#     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-#       its contributors may be used to endorse or promote products derived
-#       from this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-# POSSIBILITY OF SUCH DAMAGE.
-
+# SPDX-License-Identifier: BSD-3-Clause
 
 cmake_minimum_required(VERSION 3.12)
 
@@ -34,12 +6,25 @@ cmake_minimum_required(VERSION 3.12)
 # Options
 ################################################################################
 
-option(GLOMAP_ENABLED "Whether to enable GLOMAP" OFF)
 option(SIMD_ENABLED "Whether to enable SIMD optimizations" ON)
 option(OPENMP_ENABLED "Whether to enable OpenMP parallelization" ON)
 option(IPO_ENABLED "Whether to enable interprocedural optimization" ON)
 option(CUDA_ENABLED "Whether to enable CUDA, if available" ON)
+option(HIP_ENABLED "Whether to enable AMD GPU support via HIP/ROCm" OFF)
+
+if(CUDA_ENABLED AND HIP_ENABLED)
+    message(FATAL_ERROR "CUDA and HIP cannot be enabled at the same time")
+endif()
+
+# enable_language(HIP) and set_source_files_properties(LANGUAGE HIP) require
+# CMake 3.21+. Bump the minimum only when HIP is requested so CUDA-only and
+# CPU-only builds continue to work on older CMake versions.
+if(HIP_ENABLED)
+    cmake_minimum_required(VERSION 3.21)
+endif()
+option(ONNX_ENABLED "Whether to enable ONNX, if available" ON)
 option(GUI_ENABLED "Whether to enable the graphical UI" ON)
+option(MVS_ENABLED "Whether to enable the Multi-View Stereo module" ON)
 option(OPENGL_ENABLED "Whether to enable OpenGL, if available" ON)
 option(TESTS_ENABLED "Whether to build test binaries" OFF)
 option(COVERAGE_ENABLED "Whether to enable code coverage" OFF)
@@ -47,14 +32,32 @@ option(ASAN_ENABLED "Whether to enable AddressSanitizer flags" OFF)
 option(TSAN_ENABLED "Whether to enable ThreadSanitizer flags" OFF)
 option(UBSAN_ENABLED "Whether to enable UndefinedBehaviorSanitizer flags" OFF)
 option(PROFILING_ENABLED "Whether to enable google-perftools linker flags" OFF)
+option(WERROR_ENABLED "Whether to treat compiler warnings as errors" OFF)
 option(CCACHE_ENABLED "Whether to enable compiler caching, if available" ON)
 option(CGAL_ENABLED "Whether to enable the CGAL library" ON)
 option(LSD_ENABLED "Whether to enable the LSD library" ON)
 option(DOWNLOAD_ENABLED "Whether to enable (automatic) download of resources (requires Curl/OpenSSL)" ON)
 option(UNINSTALL_ENABLED "Whether to create a target to 'uninstall' colmap" ON)
+option(BENCHMARK_ENABLED "Whether to enable runtime benchmarking support" OFF)
 option(FETCH_POSELIB "Whether to consume PoseLib using FetchContent or find_package" ON)
 option(FETCH_FAISS "Whether to consume faiss using FetchContent or find_package" ON)
+option(FETCH_ONNX "Whether to consume ONNX using FetchContent or find_package" ON)
+# Unlike the FETCH_* options above, this one is only a fallback: a system Boost
+# that is new enough is always preferred and nothing is downloaded then.
+option(FETCH_BOOST "Whether to fall back to building a pinned Boost using FetchContent if no system Boost of the required version is found" ON)
+option(BUILD_SHARED_LIBS "Whether to build shared libraries (faster linktime, slower runtime)" OFF)
 option(ALL_SOURCE_TARGET "Whether to create a target for all source files (for Visual Studio / XCode development)" OFF)
+
+# Experimental
+option(CASPAR_ENABLED "Whether to enable CASPAR-accelerated bundle adjustment" OFF)
+option(CASPAR_USE_DOUBLE "Use double precision in Caspar solver" OFF)
+
+if(CASPAR_ENABLED)
+    add_compile_definitions(CASPAR_ENABLED)
+    if(CASPAR_USE_DOUBLE)
+        add_compile_definitions(CASPAR_USE_DOUBLE)
+    endif()
+endif()
 
 # Disables default features, as we specify each required feature manually below.
 list(APPEND VCPKG_MANIFEST_FEATURES "core")
@@ -65,6 +68,9 @@ if(TESTS_ENABLED)
 endif()
 if(CUDA_ENABLED)
     list(APPEND VCPKG_MANIFEST_FEATURES "cuda")
+endif()
+if(ONNX_ENABLED AND NOT FETCH_ONNX)
+    list(APPEND VCPKG_MANIFEST_FEATURES "onnx")
 endif()
 if(GUI_ENABLED)
     list(APPEND VCPKG_MANIFEST_FEATURES "gui")
@@ -79,7 +85,7 @@ endif()
 
 project(COLMAP LANGUAGES C CXX)
 
-set(COLMAP_VERSION "3.14.0.dev0")
+set(COLMAP_VERSION "4.3.0.dev0")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -105,6 +111,18 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/CMakeHelper.cmake NO_POLICY_SCOPE)
 # COLMAP's static libraries.
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# The build type has to be settled before the dependencies are configured. The
+# ones built as subprojects install per-configuration export files, and a
+# subproject configured with an empty CMAKE_BUILD_TYPE installs none, leaving
+# its imported targets without an IMPORTED_LOCATION for consumers.
+if(CMAKE_BUILD_TYPE)
+    message(STATUS "Build type specified as ${CMAKE_BUILD_TYPE}")
+else()
+    message(STATUS "Build type not specified, using Release")
+    set(CMAKE_BUILD_TYPE Release)
+    set(IS_DEBUG OFF)
+endif()
+
 ################################################################################
 # Dependency configuration
 ################################################################################
@@ -115,14 +133,6 @@ include(cmake/FindDependencies.cmake)
 ################################################################################
 # Compiler specific configuration
 ################################################################################
-
-if(CMAKE_BUILD_TYPE)
-    message(STATUS "Build type specified as ${CMAKE_BUILD_TYPE}")
-else()
-    message(STATUS "Build type not specified, using Release")
-    set(CMAKE_BUILD_TYPE Release)
-    set(IS_DEBUG OFF)
-endif()
 
 if("${CMAKE_BUILD_TYPE}" STREQUAL "ClangTidy")
     find_program(CLANG_TIDY_EXE NAMES clang-tidy)
@@ -162,6 +172,17 @@ if(IS_MACOS)
     add_link_options(LINKER:-no_warn_duplicate_libraries)
 endif()
 
+# Correctly set RPATH to look up dependencies.
+if(NOT IS_MSVC)
+    if(IS_MACOS)
+        set(RPATH_BASE "@executable_path")
+    else()
+        set(RPATH_BASE "$ORIGIN")
+    endif()
+    file(RELATIVE_PATH INSTALL_LIB_DIR "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_INSTALL_BINDIR}" "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR}")
+    list(APPEND CMAKE_INSTALL_RPATH "${RPATH_BASE}/${INSTALL_LIB_DIR}")
+endif()
+
 if(IS_DEBUG)
     add_compile_definitions(EIGEN_INITIALIZE_MATRICES_BY_NAN)
 endif()
@@ -174,9 +195,11 @@ endif()
 
 if(IPO_ENABLED AND NOT IS_DEBUG AND NOT IS_GNU)
     message(STATUS "Enabling interprocedural optimization")
+    set(COLMAP_INTERPROCEDURAL_OPTIMIZATION TRUE)
     set_property(DIRECTORY PROPERTY INTERPROCEDURAL_OPTIMIZATION 1)
 else()
     message(STATUS "Disabling interprocedural optimization")
+    set(COLMAP_INTERPROCEDURAL_OPTIMIZATION FALSE)
 endif()
 
 if(ASAN_ENABLED)
@@ -215,6 +238,9 @@ if(CCACHE_ENABLED)
         message(STATUS "Enabling ccache support")
         set(CMAKE_C_COMPILER_LAUNCHER ${CCACHE})
         set(CMAKE_CXX_COMPILER_LAUNCHER ${CCACHE})
+        if(CUDA_ENABLED)
+            set(CMAKE_CUDA_COMPILER_LAUNCHER ${CCACHE})
+        endif()
     else()
         message(STATUS "Disabling ccache support")
     endif()
@@ -254,11 +280,12 @@ include(GenerateVersionDefinitions)
 include_directories(src)
 link_directories(${COLMAP_LINK_DIRS})
 
-add_subdirectory(src/colmap)
-if(GLOMAP_ENABLED)
-    add_subdirectory(src/glomap)
-endif()
 add_subdirectory(src/thirdparty)
+add_subdirectory(src/colmap)
+
+if(BENCHMARK_ENABLED)
+    add_subdirectory(benchmark/runtime)
+endif()
 
 ################################################################################
 # Generate source groups for Visual Studio, XCode, etc.
@@ -266,16 +293,21 @@ add_subdirectory(src/thirdparty)
 
 COLMAP_ADD_SOURCE_DIR(src/colmap/controllers CONTROLLERS_SRCS *.h *.cc)
 COLMAP_ADD_SOURCE_DIR(src/colmap/estimators ESTIMATORS_SRCS *.h *.cc)
+COLMAP_ADD_SOURCE_DIR(src/colmap/estimators/cost_functions ESTIMATORS_COST_FUNCTIONS_SRCS *.h *.cc)
+COLMAP_ADD_SOURCE_DIR(src/colmap/estimators/solvers ESTIMATORS_SOLVERS_SRCS *.h *.cc)
 COLMAP_ADD_SOURCE_DIR(src/colmap/exe EXE_SRCS *.h *.cc)
 COLMAP_ADD_SOURCE_DIR(src/colmap/feature FEATURE_SRCS *.h *.cc)
 COLMAP_ADD_SOURCE_DIR(src/colmap/geometry GEOMETRY_SRCS *.h *.cc)
 COLMAP_ADD_SOURCE_DIR(src/colmap/image IMAGE_SRCS *.h *.cc)
 COLMAP_ADD_SOURCE_DIR(src/colmap/math MATH_SRCS *.h *.cc)
-COLMAP_ADD_SOURCE_DIR(src/colmap/mvs MVS_SRCS *.h *.cc *.cu)
+if(MVS_ENABLED)
+    COLMAP_ADD_SOURCE_DIR(src/colmap/mvs MVS_SRCS *.h *.cc *.cu)
+endif()
 COLMAP_ADD_SOURCE_DIR(src/colmap/optim OPTIM_SRCS *.h *.cc)
 COLMAP_ADD_SOURCE_DIR(src/colmap/retrieval RETRIEVAL_SRCS *.h *.cc)
 COLMAP_ADD_SOURCE_DIR(src/colmap/scene SCENE_SRCS *.h *.cc)
 COLMAP_ADD_SOURCE_DIR(src/colmap/sensor SENSOR_SRCS *.h *.cc)
+COLMAP_ADD_SOURCE_DIR(src/colmap/sensor/models SENSOR_MODELS_SRCS *.h)
 COLMAP_ADD_SOURCE_DIR(src/colmap/sfm SFM_SRCS *.h *.cc)
 COLMAP_ADD_SOURCE_DIR(src/colmap/tools TOOLS_SRCS *.h *.cc)
 COLMAP_ADD_SOURCE_DIR(src/colmap/ui UI_SRCS *.h *.cc)
@@ -295,16 +327,18 @@ if(ALL_SOURCE_TARGET)
     set(ALL_SRCS
         ${CONTROLLERS_SRCS}
         ${ESTIMATORS_SRCS}
+        ${ESTIMATORS_COST_FUNCTIONS_SRCS}
+        ${ESTIMATORS_SOLVERS_SRCS}
         ${EXE_SRCS}
         ${FEATURE_SRCS}
         ${GEOMETRY_SRCS}
         ${IMAGE_SRCS}
         ${MATH_SRCS}
-        ${MVS_SRCS}
         ${OPTIM_SRCS}
         ${RETRIEVAL_SRCS}
         ${SCENE_SRCS}
         ${SENSOR_SRCS}
+        ${SENSOR_MODELS_SRCS}
         ${SFM_SRCS}
         ${TOOLS_SRCS}
         ${UI_SRCS}
@@ -313,6 +347,12 @@ if(ALL_SOURCE_TARGET)
         ${THIRDPARTY_SIFT_GPU_SRCS}
         ${THIRDPARTY_VLFEAT_SRCS}
     )
+
+    if(MVS_ENABLED)
+        list(APPEND ALL_SRCS
+            ${MVS_SRCS}
+        )
+    endif()
 
     if(LSD_ENABLED)
         list(APPEND ALL_SRCS
@@ -344,9 +384,13 @@ if(IS_MSVC)
             DESTINATION "/")
 endif()
 
-# Install application meny entry under Linux/Unix.
+# Install application meny entry and icon under Linux/Unix.
 if(UNIX AND NOT APPLE)
     install(FILES "doc/COLMAP.desktop" DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/applications")
+    # Install the app icon so the desktop entry's "Icon=colmap" resolves.
+    install(FILES "src/colmap/ui/media/colmap-logo.svg"
+            DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps"
+            RENAME "colmap.svg")
 endif()
 
 # Configure the uninstallation script.
@@ -362,16 +406,18 @@ set(COLMAP_EXPORT_LIBS
     # Internal.
     colmap_controllers
     colmap_estimators
+    colmap_estimators_cost_functions
+    colmap_estimators_solvers
     colmap_exe
     colmap_feature_types
     colmap_feature
     colmap_geometry
     colmap_image
     colmap_math
-    colmap_mvs
     colmap_optim
     colmap_retrieval
     colmap_scene
+    colmap_scene_types
     colmap_sensor
     colmap_sfm
     colmap_util
@@ -379,6 +425,9 @@ set(COLMAP_EXPORT_LIBS
     colmap_poisson_recon
     colmap_vlfeat
 )
+if(MVS_ENABLED)
+    list(APPEND COLMAP_EXPORT_LIBS colmap_mvs)
+endif()
 if(LSD_ENABLED)
     list(APPEND COLMAP_EXPORT_LIBS
          # Third-party.
@@ -390,11 +439,13 @@ if(GUI_ENABLED)
          colmap_ui
     )
 endif()
-if(CUDA_ENABLED)
+if(CUDA_ENABLED OR HIP_ENABLED)
     list(APPEND COLMAP_EXPORT_LIBS
          colmap_util_cuda
-         colmap_mvs_cuda
     )
+    if(MVS_ENABLED)
+        list(APPEND COLMAP_EXPORT_LIBS colmap_mvs_cuda)
+    endif()
 endif()
 if(GPU_ENABLED)
     list(APPEND COLMAP_EXPORT_LIBS
@@ -406,6 +457,9 @@ if(FETCH_POSELIB)
 endif()
 if(FETCH_FAISS)
     list(APPEND COLMAP_EXPORT_LIBS faiss)
+endif()
+if(CASPAR_ENABLED)
+    list(APPEND COLMAP_EXPORT_LIBS caspar_lib_core)
 endif()
 
 # Add unified interface library target to export.
@@ -451,7 +505,25 @@ install(
 install(
     DIRECTORY src/thirdparty
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/colmap
-    FILES_MATCHING REGEX ".*[.]h|.*[.]hpp|.*[.]inl")
+    FILES_MATCHING
+        REGEX ".*[.]h|.*[.]hpp|.*[.]inl"
+        PATTERN "Symforce-Caspar" EXCLUDE)
+
+# Only ship the active Caspar precision tree (avoids bundling unused kernel
+# headers and the inactive precision when CASPAR_ENABLED is off).
+if(CASPAR_ENABLED)
+    if(CASPAR_USE_DOUBLE)
+        set(_caspar_install_precision "f64")
+    else()
+        set(_caspar_install_precision "f32")
+    endif()
+    install(
+        DIRECTORY
+            src/thirdparty/Symforce-Caspar/generated/${_caspar_install_precision}
+        DESTINATION
+            ${CMAKE_INSTALL_INCLUDEDIR}/colmap/thirdparty/Symforce-Caspar/generated
+        FILES_MATCHING REGEX ".*[.]h|.*[.]hpp|.*[.]inl")
+endif()
 
 # Install find_package scripts for dependencies.
 install(

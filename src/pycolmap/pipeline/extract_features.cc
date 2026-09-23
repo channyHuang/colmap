@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include "colmap/controllers/feature_extraction.h"
 #include "colmap/controllers/image_reader.h"
 #include "colmap/exe/feature.h"
@@ -11,6 +13,7 @@
 #include "pycolmap/pybind11_extension.h"
 #include "pycolmap/utils.h"
 
+#include <filesystem>
 #include <memory>
 
 #include <pybind11/pybind11.h>
@@ -20,19 +23,22 @@ using namespace colmap;
 using namespace pybind11::literals;
 namespace py = pybind11;
 
-void ExtractFeatures(const std::string& database_path,
-                     const std::string& image_path,
-                     const std::vector<std::string>& image_names,
-                     const CameraMode camera_mode,
-                     ImageReaderOptions reader_options,
-                     FeatureExtractionOptions extraction_options,
-                     const Device device) {
+void ExtractFeatures(
+    const std::filesystem::path& database_path,
+    const std::filesystem::path& image_path,
+    const std::vector<std::string>& image_names,
+    const CameraMode camera_mode,
+    ImageReaderOptions reader_options,
+    FeatureExtractionOptions extraction_options,
+    const Device device,
+    const std::shared_ptr<CancellationToken>& cancellation_token) {
   THROW_CHECK_DIR_EXISTS(image_path);
   extraction_options.use_gpu = IsGPU(device);
   THROW_CHECK(extraction_options.Check());
 
   UpdateImageReaderOptionsFromCameraMode(reader_options, camera_mode);
   reader_options.image_path = image_path;
+  reader_options.as_rgb = extraction_options.RequiresRGB();
 
   if (!image_names.empty()) {
     reader_options.image_names = image_names;
@@ -47,7 +53,7 @@ void ExtractFeatures(const std::string& database_path,
   std::unique_ptr<Thread> extractor = CreateFeatureExtractorController(
       database_path, reader_options, extraction_options);
   extractor->Start();
-  PyWait(extractor.get());
+  PyWait(extractor.get(), cancellation_token);
 }
 
 void BindExtractFeatures(py::module& m) {
@@ -63,5 +69,6 @@ void BindExtractFeatures(py::module& m) {
                 FeatureExtractionOptions(),
                 "FeatureExtractionOptions()"),
       "device"_a = Device::AUTO,
+      "cancellation_token"_a = py::none(),
       "Extract SIFT Features and write them to database");
 }

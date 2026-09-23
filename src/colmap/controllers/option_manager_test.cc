@@ -1,44 +1,11 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/controllers/option_manager.h"
 
 #include "colmap/controllers/image_reader.h"
 #include "colmap/controllers/incremental_pipeline.h"
-#include "colmap/estimators/bundle_adjustment.h"
-#include "colmap/estimators/two_view_geometry.h"
-#include "colmap/feature/pairing.h"
 #include "colmap/feature/sift.h"
-#include "colmap/mvs/fusion.h"
-#include "colmap/mvs/meshing.h"
 #include "colmap/mvs/patch_match_options.h"
-#include "colmap/ui/render_options.h"
 #include "colmap/util/file.h"
 #include "colmap/util/testing.h"
 
@@ -116,15 +83,17 @@ TEST(OptionManager, AddAllOptions) {
   EXPECT_NE(options.feature_matching, nullptr);
   EXPECT_NE(options.bundle_adjustment, nullptr);
   EXPECT_NE(options.mapper, nullptr);
+#if defined(COLMAP_MVS_ENABLED)
   EXPECT_NE(options.patch_match_stereo, nullptr);
+#endif
 }
 
 TEST(OptionManager, WriteAndRead) {
-  const std::string test_dir = CreateTestDir();
-  const std::string config_path = test_dir + "/config.ini";
+  const auto test_dir = CreateTestDir();
+  const auto config_path = test_dir / "config.ini";
 
   // Create necessary directories
-  CreateDirIfNotExists(test_dir + "/images");
+  CreateDirIfNotExists(test_dir / "images");
 
   // Create and configure an OptionManager
   OptionManager options_write;
@@ -132,9 +101,10 @@ TEST(OptionManager, WriteAndRead) {
   options_write.AddImageOptions();
   options_write.AddFeatureExtractionOptions();
   options_write.AddMapperOptions();
+  options_write.AddGlobalMapperOptions();
 
-  *options_write.database_path = test_dir + "/database.db";
-  *options_write.image_path = test_dir + "/images";
+  *options_write.database_path = test_dir / "database.db";
+  *options_write.image_path = test_dir / "images";
   options_write.feature_extraction->max_image_size = 2048;
   options_write.feature_extraction->sift->max_num_features = 4096;
   options_write.mapper->min_num_matches = 20;
@@ -149,6 +119,7 @@ TEST(OptionManager, WriteAndRead) {
   options_read.AddImageOptions();
   options_read.AddFeatureExtractionOptions();
   options_read.AddMapperOptions();
+  options_read.AddGlobalMapperOptions();
 
   EXPECT_TRUE(options_read.Read(config_path));
 
@@ -164,17 +135,17 @@ TEST(OptionManager, WriteAndRead) {
 }
 
 TEST(OptionManager, ReRead) {
-  const std::string test_dir = CreateTestDir();
-  const std::string config_path = test_dir + "/config.ini";
+  const auto test_dir = CreateTestDir();
+  const auto config_path = test_dir / "config.ini";
 
   // Create necessary directories
-  CreateDirIfNotExists(test_dir + "/images");
+  CreateDirIfNotExists(test_dir / "images");
 
   // Create and write initial config
   OptionManager options_write;
   options_write.AddAllOptions();
-  *options_write.database_path = test_dir + "/database.db";
-  *options_write.image_path = test_dir + "/images";
+  *options_write.database_path = test_dir / "database.db";
+  *options_write.image_path = test_dir / "images";
   options_write.feature_extraction->max_image_size = 2048;
   options_write.Write(config_path);
 
@@ -196,59 +167,59 @@ TEST(OptionManager, ReadNonExistentFile) {
 }
 
 TEST(OptionManager, Check) {
-  const std::string test_dir = CreateTestDir();
+  const auto test_dir = CreateTestDir();
 
   OptionManager options;
   options.AddDatabaseOptions();
   options.AddImageOptions();
 
   // Should fail with non-existent paths
-  *options.database_path = test_dir + "/database.db";
+  *options.database_path = test_dir / "database.db";
   *options.image_path = "/path/that/does/not/exist";
   EXPECT_FALSE(options.Check());
 
   // Should succeed with valid paths
-  CreateDirIfNotExists(test_dir + "/images");
-  *options.image_path = test_dir + "/images";
+  CreateDirIfNotExists(test_dir / "images");
+  *options.image_path = test_dir / "images";
   EXPECT_TRUE(options.Check());
 }
 
 TEST(OptionManager, CheckDatabaseParentDir) {
-  const std::string test_dir = CreateTestDir();
+  const auto test_dir = CreateTestDir();
 
   OptionManager options;
   options.AddDatabaseOptions();
 
   // Should succeed when database parent dir exists
-  *options.database_path = test_dir + "/database.db";
+  *options.database_path = test_dir / "database.db";
   EXPECT_TRUE(options.Check());
 
   // Should fail when database path is a directory
-  CreateDirIfNotExists(test_dir + "/bad_database");
-  *options.database_path = test_dir + "/bad_database";
+  CreateDirIfNotExists(test_dir / "bad_database");
+  *options.database_path = test_dir / "bad_database";
   EXPECT_FALSE(options.Check());
 }
 
 TEST(OptionManager, ParseWithOptions) {
-  const std::string test_dir = CreateTestDir();
-  CreateDirIfNotExists(test_dir + "/images");
+  const auto test_dir = CreateTestDir();
+  CreateDirIfNotExists(test_dir / "images");
 
   OptionManager options;
   options.AddDatabaseOptions();
   options.AddImageOptions();
   options.AddFeatureExtractionOptions();
 
-  const std::string database_path = test_dir + "/database.db";
-  const std::string image_path = test_dir + "/images";
+  const auto database_path = test_dir / "database.db";
+  const auto image_path = test_dir / "images";
 
   // Create argv with additional options
   const std::vector<std::string> args = {
       "colmap",
       "--database_path",
-      database_path,
+      database_path.string(),
       "--image_path",
-      image_path,
-      "--SiftExtraction.max_image_size",
+      image_path.string(),
+      "--FeatureExtraction.max_image_size",
       "1024",
       "--SiftExtraction.max_num_features",
       "2048",
@@ -270,9 +241,9 @@ TEST(OptionManager, ParseWithOptions) {
 }
 
 TEST(OptionManager, ParseWithProjectPath) {
-  const std::string test_dir = CreateTestDir();
-  const std::string config_path = test_dir + "/config.ini";
-  CreateDirIfNotExists(test_dir + "/images");
+  const auto test_dir = CreateTestDir();
+  const auto config_path = test_dir / "config.ini";
+  CreateDirIfNotExists(test_dir / "images");
 
   // Create and write a config file
   OptionManager options_write;
@@ -280,8 +251,8 @@ TEST(OptionManager, ParseWithProjectPath) {
   options_write.AddImageOptions();
   options_write.AddFeatureExtractionOptions();
 
-  *options_write.database_path = test_dir + "/database.db";
-  *options_write.image_path = test_dir + "/images";
+  *options_write.database_path = test_dir / "database.db";
+  *options_write.image_path = test_dir / "images";
   options_write.feature_extraction->max_image_size = 3000;
   options_write.Write(config_path);
 
@@ -294,7 +265,7 @@ TEST(OptionManager, ParseWithProjectPath) {
   const std::vector<std::string> args = {
       "colmap",
       "--project_path",
-      config_path,
+      config_path.string(),
   };
 
   std::vector<char*> argv;
@@ -326,18 +297,18 @@ TEST(OptionManager, ParseEmptyArguments) {
 }
 
 TEST(OptionManager, ParseUnknownArgumentsFails) {
-  const std::string test_dir = CreateTestDir();
+  const auto test_dir = CreateTestDir();
 
   OptionManager options;
   options.AddDatabaseOptions();
 
-  const std::string database_path = test_dir + "/database.db";
+  const auto database_path = test_dir / "database.db";
 
   // Create argv with an unknown option
   const std::vector<std::string> args = {
       "colmap",
       "--database_path",
-      database_path,
+      database_path.string(),
       "--unknown_option",
       "value",
   };
@@ -350,6 +321,26 @@ TEST(OptionManager, ParseUnknownArgumentsFails) {
 
   // Should return false when encountering unknown option
   EXPECT_FALSE(options.Parse(argv.size(), argv.data()));
+}
+
+TEST(OptionManager, WriteAfterResetOptions) {
+  const auto test_dir = CreateTestDir();
+  const auto config_path = test_dir / "config.ini";
+
+  OptionManager options;
+  options.AddAllOptions();
+  *options.database_path = test_dir / "database.db";
+  CreateDirIfNotExists(test_dir / "images");
+  *options.image_path = test_dir / "images";
+
+  // ResetOptions reassigns option structs, which reallocates sub-objects
+  // (e.g., feature_matching->sift, bundle_adjustment->ceres). This must not
+  // invalidate the raw pointers registered by AddAllOptions, otherwise
+  // Write() will dereference dangling pointers.
+  options.ResetOptions(/*reset_paths=*/false);
+
+  EXPECT_NO_THROW(options.Write(config_path));
+  EXPECT_TRUE(ExistsFile(config_path));
 }
 
 }  // namespace

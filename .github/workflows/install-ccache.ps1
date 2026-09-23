@@ -1,15 +1,19 @@
+# SPDX-License-Identifier: BSD-3-Clause
+
 [CmdletBinding()]
 param (
     [Parameter(Mandatory = $true)]
     [string] $Destination
 )
 
-$version = "4.12.1"
+$version = "4.13.6"
 $folder="ccache-$version-windows-x86_64"
 $url = "https://github.com/ccache/ccache/releases/download/v$version/$folder.zip"
-$expectedSha256 = "98AEA520D66905B8BA7A8E648A4CC0CA941D5E119D441F1E879A4A9045BF18F6"
+$expectedSha256 = "3D7CEBB05850AD704E197B3F1D3F0F924AB6C9FDFC561578E146184FE9D89380"
 
 $ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+$PSNativeCommandUseErrorActionPreference = $true
 
 try {
     New-Item -Path "$Destination" -ItemType Container -ErrorAction SilentlyContinue

@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/geometry/gps.h"
 
@@ -182,10 +155,11 @@ TEST(GPS, EllipsoidToENUWGS84) {
   const auto ori_ell = gps_tform.ECEFToEllipsoid({ref_xyz[0]})[0];
 
   // Get ENU ref from ECEF ref
-  const auto ref_enu = gps_tform.ECEFToENU(ref_xyz, ori_ell(0), ori_ell(1));
+  const auto ref_enu = gps_tform.ECEFToENU(ref_xyz, ref_xyz[0]);
 
   // Get ENU from Ell
-  const auto enu = gps_tform.EllipsoidToENU(ell, ori_ell(0), ori_ell(1));
+  const auto enu =
+      gps_tform.EllipsoidToENU(ell, ori_ell(0), ori_ell(1), ori_ell(2));
 
   for (size_t i = 0; i < ell.size(); ++i) {
     EXPECT_THAT(enu[i], EigenMatrixNear(ref_enu[i], 1e-8));
@@ -210,14 +184,11 @@ TEST(GPS, ECEFToENU) {
 
   const auto xyz = gps_tform.EllipsoidToECEF(ell);
 
-  // Get lat0, lon0 origin from ref
-  const auto ori_ell = gps_tform.ECEFToEllipsoid({ref_xyz[0]})[0];
-
   // Get ENU from ECEF ref
-  const auto ref_enu = gps_tform.ECEFToENU(ref_xyz, ori_ell(0), ori_ell(1));
+  const auto ref_enu = gps_tform.ECEFToENU(ref_xyz, ref_xyz[0]);
 
   // Get ENU from ECEF
-  const auto enu = gps_tform.ECEFToENU(xyz, ori_ell(0), ori_ell(1));
+  const auto enu = gps_tform.ECEFToENU(xyz, xyz[0]);
 
   for (size_t i = 0; i < ell.size(); ++i) {
     EXPECT_THAT(enu[i], EigenMatrixNear(ref_enu[i], 1e-8));
@@ -248,7 +219,7 @@ TEST(GPS, ENUToEllipsoidWGS84) {
   const double alt0 = ori_ell[0](2);
 
   // Get ENU from ECEF
-  const auto enu = gps_tform.ECEFToENU(xyz, lat0, lon0);
+  const auto enu = gps_tform.ECEFToENU(xyz, xyz[0]);
 
   const auto xyz_enu = gps_tform.ENUToECEF(enu, lat0, lon0, alt0);
 
@@ -282,7 +253,7 @@ TEST(GPS, ENUToECEF) {
   const double alt0 = ell[0](2);
 
   // Get ENU from Ell
-  const auto enu = gps_tform.EllipsoidToENU(ell, lat0, lon0);
+  const auto enu = gps_tform.EllipsoidToENU(ell, lat0, lon0, alt0);
 
   // Get XYZ from ENU
   const auto xyz = gps_tform.ENUToECEF(enu, lat0, lon0, alt0);

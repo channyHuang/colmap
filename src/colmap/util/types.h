@@ -1,36 +1,11 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #pragma once
 
 #include <functional>
 #include <iterator>
+#include <type_traits>
+#include <utility>
 
 #ifdef _MSC_VER
 #if _MSC_VER >= 1600
@@ -67,10 +42,14 @@ namespace Eigen {
 using Matrix3x4f = Matrix<float, 3, 4>;
 using Matrix3x4d = Matrix<double, 3, 4>;
 using Matrix2x3d = Matrix<double, 2, 3>;
+using Matrix3x2d = Matrix<double, 3, 2>;
 using Matrix6d = Matrix<double, 6, 6>;
+using Matrix7d = Matrix<double, 7, 7>;
 using Vector3ub = Matrix<uint8_t, 3, 1>;
 using Vector4ub = Matrix<uint8_t, 4, 1>;
 using Vector6d = Matrix<double, 6, 1>;
+using Vector7d = Matrix<double, 7, 1>;
+using Vector8d = Matrix<double, 8, 1>;
 using RowMajorMatrixXf = Matrix<float, Dynamic, Dynamic, RowMajor>;
 using RowMajorMatrixXd = Matrix<double, Dynamic, Dynamic, RowMajor>;
 using RowMajorMatrixXi = Matrix<int, Dynamic, Dynamic, RowMajor>;
@@ -84,15 +63,15 @@ namespace colmap {
 ////////////////////////////////////////////////////////////////////////////////
 
 // Unique identifier for rigs.
-typedef uint32_t rig_t;
+using rig_t = uint32_t;
 constexpr rig_t kInvalidRigId = std::numeric_limits<rig_t>::max();
 
 // Unique identifier for cameras.
-typedef uint32_t camera_t;
+using camera_t = uint32_t;
 constexpr camera_t kInvalidCameraId = std::numeric_limits<camera_t>::max();
 
 // Unique identifier for images.
-typedef uint32_t image_t;
+using image_t = uint32_t;
 constexpr image_t kInvalidImageId = std::numeric_limits<image_t>::max();
 
 // The maximum number of images, that can be stored in the database,
@@ -101,23 +80,38 @@ constexpr size_t kMaxNumImages =
     static_cast<size_t>(std::numeric_limits<int32_t>::max());
 
 // Unique identifier for frames.
-typedef uint32_t frame_t;
+using frame_t = uint32_t;
 constexpr frame_t kInvalidFrameId = std::numeric_limits<frame_t>::max();
 
 // Each image pair gets a unique ID, see `ImagePairToPairId`.
-typedef uint64_t image_pair_t;
+using image_pair_t = uint64_t;
 constexpr image_pair_t kInvalidImagePairId =
     std::numeric_limits<image_pair_t>::max();
 
 // Index per image, i.e. determines maximum number of 2D points per image.
-typedef uint32_t point2D_t;
+using point2D_t = uint32_t;
 constexpr point2D_t kInvalidPoint2DIdx = std::numeric_limits<point2D_t>::max();
 
 // Unique identifier per added 3D point. Since we add many 3D points,
 // delete them, and possibly re-add them again, the maximum number of allowed
 // unique indices should be large.
-typedef uint64_t point3D_t;
+using point3D_t = uint64_t;
 constexpr point3D_t kInvalidPoint3DId = std::numeric_limits<point3D_t>::max();
+
+// Timestamp in nanoseconds. Using int64_t rather than double avoids
+// floating-point precision loss when comparing or differencing large absolute
+// timestamps (e.g., Unix epoch in nanoseconds), and enables exact equality
+// checks for use as map keys.
+using timestamp_t = int64_t;
+// Sentinel for an unset/invalid timestamp. Chosen as INT64_MIN so that any
+// realistic timestamp (including negative ones) remains a valid value.
+constexpr timestamp_t kInvalidTimestamp =
+    std::numeric_limits<timestamp_t>::min();
+
+// Unique identifier for pose priors.
+using pose_prior_t = uint32_t;
+constexpr pose_prior_t kInvalidPosePriorId =
+    std::numeric_limits<pose_prior_t>::max();
 
 // Sensor type.
 #ifdef __CUDACC__
@@ -131,14 +125,15 @@ MAKE_ENUM_CLASS_OVERLOAD_STREAM(SensorType, -1, INVALID, CAMERA, IMU);
 #endif
 
 struct sensor_t {
+  constexpr static uint32_t kInvalidId = std::numeric_limits<uint32_t>::max();
+
   // Type of the sensor (INVALID / CAMERA / IMU)
   SensorType type;
   // Unique identifier of the sensor.
   // This can be camera_t / imu_t (not supported yet)
   uint32_t id;
 
-  constexpr sensor_t()
-      : type(SensorType::INVALID), id(std::numeric_limits<uint32_t>::max()) {}
+  constexpr sensor_t() : type(SensorType::INVALID), id(kInvalidId) {}
   constexpr sensor_t(const SensorType& type, uint32_t id)
       : type(type), id(id) {}
 
@@ -154,17 +149,18 @@ struct sensor_t {
 };
 
 constexpr sensor_t kInvalidSensorId =
-    sensor_t(SensorType::INVALID, std::numeric_limits<uint32_t>::max());
+    sensor_t(SensorType::INVALID, sensor_t::kInvalidId);
 
 struct data_t {
+  constexpr static uint32_t kInvalidId = std::numeric_limits<uint32_t>::max();
+
   // Unique identifer of the sensor
   sensor_t sensor_id;
   // Unique identifier of the data (measurement)
   // This can be image_t / imu_sample_t (not supported yet)
   uint64_t id;
 
-  constexpr data_t()
-      : sensor_id(kInvalidSensorId), id(std::numeric_limits<uint32_t>::max()) {}
+  constexpr data_t() : sensor_id(kInvalidSensorId), id(kInvalidId) {}
   constexpr data_t(const sensor_t& sensor_id, uint32_t id)
       : sensor_id(sensor_id), id(id) {}
 
@@ -179,13 +175,12 @@ struct data_t {
   }
 };
 
-constexpr data_t kInvalidDataId =
-    data_t(kInvalidSensorId, std::numeric_limits<uint32_t>::max());
+constexpr data_t kInvalidDataId = data_t(kInvalidSensorId, data_t::kInvalidId);
 
 // Return true if image pairs should be swapped. Used to enforce a specific
 // image order to generate unique image pair identifiers independent of the
 // order in which the image identifiers are used.
-inline bool SwapImagePair(image_t image_id1, image_t image_id2) {
+inline bool ShouldSwapImagePair(image_t image_id1, image_t image_id2) {
   return image_id1 > image_id2;
 }
 
@@ -200,7 +195,7 @@ inline void ThrowIfGtMaxImages(image_t image_id) {
 inline image_pair_t ImagePairToPairId(image_t image_id1, image_t image_id2) {
   ThrowIfGtMaxImages(image_id1);
   ThrowIfGtMaxImages(image_id2);
-  if (SwapImagePair(image_id1, image_id2)) {
+  if (ShouldSwapImagePair(image_id1, image_id2)) {
     return static_cast<image_pair_t>(kMaxNumImages) * image_id2 + image_id1;
   } else {
     return static_cast<image_pair_t>(kMaxNumImages) * image_id1 + image_id2;
@@ -231,6 +226,7 @@ class span {
   T const& operator[](size_t i) const noexcept { return ptr_[i]; }
 
   size_t size() const noexcept { return size_; }
+  bool empty() const noexcept { return size_ == 0; }
 
   T* begin() noexcept { return ptr_; }
   T* end() noexcept { return ptr_ + size_; }
@@ -245,18 +241,18 @@ struct filter_iterator {
   template <class OtherIterator, class OtherPredicate>
   friend struct filter_iterator;
 
-  typedef
-      typename std::iterator_traits<Iterator>::iterator_category base_category;
-  typedef typename std::conditional<
+  using base_category =
+      typename std::iterator_traits<Iterator>::iterator_category;
+  using iterator_category = typename std::conditional<
       std::is_same<base_category, std::random_access_iterator_tag>::value,
       std::bidirectional_iterator_tag,
-      base_category>::type iterator_category;
+      base_category>::type;
 
-  typedef typename std::iterator_traits<Iterator>::value_type value_type;
-  typedef typename std::iterator_traits<Iterator>::reference reference;
-  typedef typename std::iterator_traits<Iterator>::pointer pointer;
-  typedef
-      typename std::iterator_traits<Iterator>::difference_type difference_type;
+  using value_type = typename std::iterator_traits<Iterator>::value_type;
+  using reference = typename std::iterator_traits<Iterator>::reference;
+  using pointer = typename std::iterator_traits<Iterator>::pointer;
+  using difference_type =
+      typename std::iterator_traits<Iterator>::difference_type;
 
   filter_iterator() = default;
   filter_iterator(const Predicate& filter, Iterator it, Iterator end)
@@ -323,25 +319,61 @@ struct filter_view {
   const filter_iterator<Iterator, Predicate> end_;
 };
 
+////////////////////////////////////////////////////////////////////////////////
+// Meta programming utilities / type traits.
+////////////////////////////////////////////////////////////////////////////////
+
+template <typename>
+struct always_false : std::false_type {};
+
+// Folds `value` into `seed`, following the classic boost::hash_combine spread.
+inline std::size_t HashCombine(std::size_t seed, std::size_t value) {
+  return seed ^ (value + 0x9e3779b9 + (seed << 6) + (seed >> 2));
+}
+
+// Hash functor for std::pair, e.g., for use with unordered containers keyed on
+// e.g., std::pair<point3D_t, point3D_t>. Provided as an explicit functor
+// (passed to the container) rather than a std::hash<std::pair<...>>
+// specialization, since specializing std::hash for the std-owned std::pair type
+// is a global ODR hazard: a downstream translation unit that implicitly
+// instantiates the primary template first would make the later explicit
+// specialization ill-formed.
+//
+// Packs both halves into disjoint bits when they fit in a size_t (collision-
+// free), else mixes them with HashCombine.
+struct PairHash {
+  template <typename T1, typename T2>
+  std::size_t operator()(const std::pair<T1, T2>& p) const {
+    // Pack into disjoint bits when possible (collision-free, unlike
+    // HashCombine); otherwise fall back to mixing.
+    if constexpr (std::is_integral_v<T1> && std::is_integral_v<T2> &&
+                  !std::is_same_v<T1, bool> && !std::is_same_v<T2, bool> &&
+                  sizeof(T1) + sizeof(T2) <= sizeof(std::size_t)) {
+      // Convert through the unsigned counterpart: the signed->unsigned cast
+      // is a bijection modulo 2^n, so negatives map losslessly into exactly
+      // their low 8*sizeof(T) bits. Both halves then occupy disjoint bit
+      // ranges, making the pack collision-free (unlike HashCombine).
+      return (static_cast<std::size_t>(
+                  static_cast<std::make_unsigned_t<T1>>(p.first))
+              << (8 * sizeof(T2))) |
+             static_cast<std::size_t>(
+                 static_cast<std::make_unsigned_t<T2>>(p.second));
+    } else {
+      return HashCombine(std::hash<T1>{}(p.first), std::hash<T2>{}(p.second));
+    }
+  }
+};
+
 }  // namespace colmap
 
 // This file provides specializations of the templated hash function for
 // custom types. These are used for comparison in unordered sets/maps.
 namespace std {
-// Hash function specialization for uint32_t pairs, e.g., image_t or camera_t.
-template <>
-struct hash<std::pair<uint32_t, uint32_t>> {
-  std::size_t operator()(const std::pair<uint32_t, uint32_t>& p) const {
-    const uint64_t s = (static_cast<uint64_t>(p.first) << 32) +
-                       static_cast<uint64_t>(p.second);
-    return std::hash<uint64_t>()(s);
-  }
-};
 
 template <>
 struct hash<colmap::sensor_t> {
   std::size_t operator()(const colmap::sensor_t& s) const noexcept {
-    return std::hash<std::pair<uint32_t, uint32_t>>{}(
+    return colmap::PairHash{}(
         std::make_pair(static_cast<uint32_t>(s.type), s.id));
   }
 };
@@ -349,10 +381,8 @@ struct hash<colmap::sensor_t> {
 template <>
 struct hash<colmap::data_t> {
   std::size_t operator()(const colmap::data_t& d) const noexcept {
-    const size_t h1 =
-        std::hash<uint64_t>{}(std::hash<colmap::sensor_t>{}(d.sensor_id));
-    const size_t h2 = std::hash<uint64_t>{}(d.id);
-    return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
+    return colmap::HashCombine(std::hash<colmap::sensor_t>{}(d.sensor_id),
+                               std::hash<uint64_t>{}(d.id));
   }
 };
 

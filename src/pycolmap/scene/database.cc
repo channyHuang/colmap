@@ -1,4 +1,8 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include "colmap/scene/database.h"
+
+#include "colmap/util/logging.h"
 
 #include "pycolmap/pybind11_extension.h"
 
@@ -11,10 +15,9 @@ namespace py = pybind11;
 
 namespace {
 
-class DatabaseTransactionWrapper {
+class PyDatabaseTransaction {
  public:
-  explicit DatabaseTransactionWrapper(Database* database)
-      : database_(database) {}
+  explicit PyDatabaseTransaction(Database* database) : database_(database) {}
 
   void Enter() {
     transaction_ = std::make_unique<DatabaseTransaction>(database_);
@@ -29,6 +32,19 @@ class DatabaseTransactionWrapper {
 
 class PyDatabaseImpl : public Database, py::trampoline_self_life_support {
  public:
+  ~PyDatabaseImpl() override {
+    // Close() is pure virtual and dispatches to a Python override. If the
+    // user instantiated Database directly (rather than subclassing it), no
+    // override exists and the call would throw. Throwing from a destructor
+    // would call std::terminate, so swallow any exception here.
+    try {
+      Close();
+    } catch (...) {
+      LOG(WARNING) << "Database is abstract and cannot be instantiated "
+                      "directly; use pycolmap.Database.open() instead.";
+    }
+  }
+
   void Close() override { PYBIND11_OVERRIDE_PURE(void, Database, Close); }
 
   bool ExistsRig(rig_t rig_id) const override {
@@ -51,8 +67,13 @@ class PyDatabaseImpl : public Database, py::trampoline_self_life_support {
     PYBIND11_OVERRIDE_PURE(bool, Database, ExistsImageWithName, name);
   }
 
-  bool ExistsPosePrior(image_t image_id) const override {
-    PYBIND11_OVERRIDE_PURE(bool, Database, ExistsPosePrior, image_id);
+  bool ExistsPosePrior(pose_prior_t pose_prior_id,
+                       bool is_deprecated_image_prior = true) const override {
+    PYBIND11_OVERRIDE_PURE(bool,
+                           Database,
+                           ExistsPosePrior,
+                           pose_prior_id,
+                           is_deprecated_image_prior);
   }
 
   bool ExistsKeypoints(image_t image_id) const override {
@@ -176,8 +197,18 @@ class PyDatabaseImpl : public Database, py::trampoline_self_life_support {
     PYBIND11_OVERRIDE_PURE(std::vector<Image>, Database, ReadAllImages);
   }
 
-  PosePrior ReadPosePrior(image_t image_id) const override {
-    PYBIND11_OVERRIDE_PURE(PosePrior, Database, ReadPosePrior, image_id);
+  PosePrior ReadPosePrior(
+      pose_prior_t pose_prior_id,
+      bool is_deprecated_image_prior = true) const override {
+    PYBIND11_OVERRIDE_PURE(PosePrior,
+                           Database,
+                           ReadPosePrior,
+                           pose_prior_id,
+                           is_deprecated_image_prior);
+  }
+
+  std::vector<PosePrior> ReadAllPosePriors() const override {
+    PYBIND11_OVERRIDE_PURE(std::vector<PosePrior>, Database, ReadAllPosePriors);
   }
 
   FeatureKeypointsBlob ReadKeypointsBlob(image_t image_id) const override {
@@ -257,9 +288,10 @@ class PyDatabaseImpl : public Database, py::trampoline_self_life_support {
     PYBIND11_OVERRIDE_PURE(image_t, Database, WriteImage, image, use_image_id);
   }
 
-  void WritePosePrior(image_t image_id, const PosePrior& pose_prior) override {
+  pose_prior_t WritePosePrior(const PosePrior& pose_prior,
+                              bool use_pose_prior_id = false) override {
     PYBIND11_OVERRIDE_PURE(
-        void, Database, WritePosePrior, image_id, pose_prior);
+        pose_prior_t, Database, WritePosePrior, pose_prior, use_pose_prior_id);
   }
 
   void WriteKeypoints(image_t image_id,
@@ -319,9 +351,8 @@ class PyDatabaseImpl : public Database, py::trampoline_self_life_support {
     PYBIND11_OVERRIDE_PURE(void, Database, UpdateImage, image);
   }
 
-  void UpdatePosePrior(image_t image_id, const PosePrior& pose_prior) override {
-    PYBIND11_OVERRIDE_PURE(
-        void, Database, UpdatePosePrior, image_id, pose_prior);
+  void UpdatePosePrior(const PosePrior& pose_prior) override {
+    PYBIND11_OVERRIDE_PURE(void, Database, UpdatePosePrior, pose_prior);
   }
 
   void UpdateKeypoints(image_t image_id,
@@ -413,9 +444,23 @@ class PyDatabaseImpl : public Database, py::trampoline_self_life_support {
 }  // namespace
 
 void BindDatabase(py::module& m) {
-  py::classh<Database, PyDatabaseImpl> PyDatabase(m, "Database");
-  PyDatabase.def(py::init<>())
-      .def_static("open", &Database::Open, "path"_a)
+  py::classh<Database, PyDatabaseImpl> PyDatabase(
+      m,
+      "Database",
+      "Database storing all extracted and matched information (cameras, "
+      "images, keypoints, descriptors, matches, rigs, and pose priors).\n\n"
+      "A Database cannot be constructed directly; instead open an existing "
+      "or new database file with ``Database.open(path)`` and release it with "
+      "``close()``. It can also be used with a context manager, which closes "
+      "the database on exit automatically:\n\n"
+      "    with pycolmap.Database.open(path) as db:\n"
+      "        ...");
+  PyDatabase
+      .def_static("open",
+                  &Database::Open,
+                  "path"_a,
+                  "Open (creating it if necessary) the database file at "
+                  "the given path and return it.")
       .def("close", &Database::Close)
       .def("__enter__", [](Database& self) { return &self; })
       .def("__exit__", [](Database& self, const py::args&) { self.Close(); })
@@ -424,7 +469,10 @@ void BindDatabase(py::module& m) {
       .def("exists_frame", &Database::ExistsFrame, "frame_id"_a)
       .def("exists_image", &Database::ExistsImage, "image_id"_a)
       .def("exists_image", &Database::ExistsImageWithName, "name"_a)
-      .def("exists_pose_prior", &Database::ExistsPosePrior, "image_id"_a)
+      .def("exists_pose_prior",
+           &Database::ExistsPosePrior,
+           "pose_prior_id"_a,
+           "is_deprecated_image_prior"_a = true)
       .def("exists_keypoints", &Database::ExistsKeypoints, "image_id"_a)
       .def("exists_descriptors", &Database::ExistsDescriptors, "image_id"_a)
       .def("exists_matches",
@@ -462,7 +510,11 @@ void BindDatabase(py::module& m) {
       .def("read_image", &Database::ReadImage, "image_id"_a)
       .def("read_image_with_name", &Database::ReadImageWithName, "name"_a)
       .def("read_all_images", &Database::ReadAllImages)
-      .def("read_pose_prior", &Database::ReadPosePrior, "image_id"_a)
+      .def("read_pose_prior",
+           &Database::ReadPosePrior,
+           "pose_prior_id"_a,
+           "is_deprecated_image_prior"_a = true)
+      .def("read_all_pose_priors", &Database::ReadAllPosePriors)
       .def("read_keypoints", &Database::ReadKeypointsBlob, "image_id"_a)
       .def("read_descriptors", &Database::ReadDescriptors, "image_id"_a)
       .def("read_matches",
@@ -553,8 +605,8 @@ void BindDatabase(py::module& m) {
            "use_image_id"_a = false)
       .def("write_pose_prior",
            &Database::WritePosePrior,
-           "image_id"_a,
-           "pose_prior"_a)
+           "pose_prior"_a,
+           "use_pose_prior_id"_a = false)
       .def("write_keypoints",
            py::overload_cast<image_t, const FeatureKeypointsBlob&>(
                &Database::WriteKeypoints),
@@ -579,10 +631,7 @@ void BindDatabase(py::module& m) {
       .def("update_camera", &Database::UpdateCamera, "camera"_a)
       .def("update_frame", &Database::UpdateFrame, "frame"_a)
       .def("update_image", &Database::UpdateImage, "image"_a)
-      .def("update_pose_prior",
-           &Database::UpdatePosePrior,
-           "image_id"_a,
-           "pose_prior"_a)
+      .def("update_pose_prior", &Database::UpdatePosePrior, "pose_prior"_a)
       .def("update_keypoints",
            py::overload_cast<image_t, const FeatureKeypointsBlob&>(
                &Database::UpdateKeypoints),
@@ -621,8 +670,8 @@ void BindDatabase(py::module& m) {
                   "database2"_a,
                   "merged_database"_a);
 
-  py::classh<DatabaseTransactionWrapper>(m, "DatabaseTransaction")
+  py::classh<PyDatabaseTransaction>(m, "DatabaseTransaction")
       .def(py::init<Database*>(), "database"_a)
-      .def("__enter__", &DatabaseTransactionWrapper::Enter)
-      .def("__exit__", &DatabaseTransactionWrapper::Exit);
+      .def("__enter__", &PyDatabaseTransaction::Enter)
+      .def("__exit__", &PyDatabaseTransaction::Exit);
 }

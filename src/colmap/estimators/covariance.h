@@ -1,40 +1,13 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #pragma once
 
-#include "colmap/estimators/bundle_adjustment.h"
+#include "colmap/estimators/bundle_adjustment_ceres.h"
 #include "colmap/geometry/rigid3.h"
 #include "colmap/scene/reconstruction.h"
+#include "colmap/util/hash_containers.h"
 
 #include <optional>
-#include <unordered_map>
 #include <vector>
 
 #include <Eigen/Core>
@@ -49,9 +22,9 @@ struct PoseParam;
 
 struct BACovariance {
   explicit BACovariance(
-      std::unordered_map<point3D_t, Eigen::MatrixXd> point_covs,
-      std::unordered_map<image_t, std::pair<int, int>> pose_L_start_size,
-      std::unordered_map<const double*, std::pair<int, int>> other_L_start_size,
+      FlatHashMap<point3D_t, Eigen::MatrixXd> point_covs,
+      NodeHashMap<image_t, std::pair<int, int>> pose_L_start_size,
+      NodeHashMap<const double*, std::pair<int, int>> other_L_start_size,
       Eigen::MatrixXd L_inv);
 
   // Covariance for 3D points, conditioned on all other variables set constant.
@@ -83,10 +56,9 @@ struct BACovariance {
   std::optional<Eigen::MatrixXd> GetOtherParamsCov(const double* params) const;
 
  private:
-  const std::unordered_map<point3D_t, Eigen::MatrixXd> point_covs_;
-  const std::unordered_map<image_t, std::pair<int, int>> pose_L_start_size_;
-  const std::unordered_map<const double*, std::pair<int, int>>
-      other_L_start_size_;
+  const FlatHashMap<point3D_t, Eigen::MatrixXd> point_covs_;
+  const NodeHashMap<image_t, std::pair<int, int>> pose_L_start_size_;
+  const NodeHashMap<const double*, std::pair<int, int>> other_L_start_size_;
   const Eigen::MatrixXd L_inv_;
 };
 
@@ -125,7 +97,7 @@ struct BACovarianceOptions {
 std::optional<BACovariance> EstimateBACovariance(
     const BACovarianceOptions& options,
     const Reconstruction& reconstruction,
-    BundleAdjuster& bundle_adjuster);
+    CeresBundleAdjuster& bundle_adjuster);
 std::optional<BACovariance> EstimateBACovarianceFromProblem(
     const BACovarianceOptions& options,
     const Reconstruction& reconstruction,
@@ -135,8 +107,7 @@ namespace internal {
 
 struct PoseParam {
   image_t image_id = kInvalidImageId;
-  const double* qvec = nullptr;
-  const double* tvec = nullptr;
+  const double* cam_from_world = nullptr;
 };
 
 std::vector<PoseParam> GetPoseParams(const Reconstruction& reconstruction,

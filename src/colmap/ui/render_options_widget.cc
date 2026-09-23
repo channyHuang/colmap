@@ -1,35 +1,9 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/ui/render_options_widget.h"
 
 #include "colmap/ui/colormaps.h"
+#include "colmap/ui/render_options.h"
 
 namespace colmap {
 
@@ -147,6 +121,9 @@ RenderOptionsWidget::RenderOptionsWidget(QWidget* parent,
   });
   AddWidgetRow("Image frame", select_image_frame_color_);
 
+  AddOptionBool(&options->render->show_camera_orientation,
+                "Camera orientation\n(top-left corner)");
+
   image_colormap_name_filter_layout_ = new QHBoxLayout();
   QPushButton* image_colormap_add_word = new QPushButton("Add", this);
   connect(image_colormap_add_word,
@@ -176,6 +153,11 @@ RenderOptionsWidget::RenderOptionsWidget(QWidget* parent,
   AddSpacer();
 
   AddOptionBool(&options->render->image_connections, "Image connections");
+
+  AddSpacer();
+
+  AddOptionBool(&options->render->mesh_wireframe, "Mesh wireframe");
+  AddOptionBool(&options->render->mesh_color, "Mesh color");
 
   AddSpacer();
 
@@ -219,23 +201,23 @@ void RenderOptionsWidget::ApplyProjection() {
 }
 
 void RenderOptionsWidget::ApplyPointColormap() {
-  PointColormapBase* point3D_color_map;
+  std::unique_ptr<PointColormapBase> point3D_color_map;
 
   switch (point3D_colormap_cb_->currentIndex()) {
     case 0:
-      point3D_color_map = new PointColormapPhotometric();
+      point3D_color_map = std::make_unique<PointColormapPhotometric>();
       break;
     case 1:
-      point3D_color_map = new PointColormapError();
+      point3D_color_map = std::make_unique<PointColormapError>();
       break;
     case 2:
-      point3D_color_map = new PointColormapTrackLen();
+      point3D_color_map = std::make_unique<PointColormapTrackLen>();
       break;
     case 3:
-      point3D_color_map = new PointColormapGroundResolution();
+      point3D_color_map = std::make_unique<PointColormapGroundResolution>();
       break;
     default:
-      point3D_color_map = new PointColormapPhotometric();
+      point3D_color_map = std::make_unique<PointColormapPhotometric>();
       break;
   }
 
@@ -243,30 +225,30 @@ void RenderOptionsWidget::ApplyPointColormap() {
   point3D_color_map->min_q = static_cast<float>(point3D_colormap_min_q_);
   point3D_color_map->max_q = static_cast<float>(point3D_colormap_max_q_);
 
-  model_viewer_widget_->SetPointColormap(point3D_color_map);
+  model_viewer_widget_->SetPointColormap(std::move(point3D_color_map));
 }
 
 void RenderOptionsWidget::ApplyImageColormap() {
-  ImageColormapBase* image_color_map;
+  std::unique_ptr<ImageColormapBase> image_color_map;
 
   switch (image_colormap_cb_->currentIndex()) {
-    case 0:
-      image_color_map = new ImageColormapUniform();
-      reinterpret_cast<ImageColormapUniform*>(image_color_map)
-          ->uniform_plane_color = image_plane_color_;
-      reinterpret_cast<ImageColormapUniform*>(image_color_map)
-          ->uniform_frame_color = image_frame_color_;
+    case 0: {
+      auto uniform = std::make_unique<ImageColormapUniform>();
+      uniform->uniform_plane_color = image_plane_color_;
+      uniform->uniform_frame_color = image_frame_color_;
+      image_color_map = std::move(uniform);
       break;
+    }
     case 1:
-      image_color_map =
-          new ImageColormapNameFilter(image_colormap_name_filter_);
+      image_color_map = std::make_unique<ImageColormapNameFilter>(
+          image_colormap_name_filter_);
       break;
     default:
-      image_color_map = new ImageColormapUniform();
+      image_color_map = std::make_unique<ImageColormapUniform>();
       break;
   }
 
-  model_viewer_widget_->SetImageColormap(image_color_map);
+  model_viewer_widget_->SetImageColormap(std::move(image_color_map));
 }
 
 void RenderOptionsWidget::ApplyBackgroundColor() {

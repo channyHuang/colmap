@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #pragma once
 
@@ -37,10 +10,10 @@
 #include "colmap/scene/track.h"
 #include "colmap/sensor/rig.h"
 #include "colmap/util/eigen_alignment.h"
+#include "colmap/util/hash_containers.h"
 #include "colmap/util/types.h"
 
-#include <unordered_map>
-#include <unordered_set>
+#include <filesystem>
 #include <vector>
 
 #include <Eigen/Core>
@@ -66,6 +39,7 @@ class Reconstruction {
   inline size_t NumCameras() const;
   inline size_t NumFrames() const;
   inline size_t NumRegFrames() const;
+  inline size_t NumRegImages() const;
   inline size_t NumImages() const;
   inline size_t NumPoints3D() const;
 
@@ -84,19 +58,17 @@ class Reconstruction {
   inline struct Point3D& Point3D(point3D_t point3D_id);
 
   // Get reference to all objects.
-  inline const std::unordered_map<rig_t, class Rig>& Rigs() const;
-  inline const std::unordered_map<camera_t, struct Camera>& Cameras() const;
-  inline const std::unordered_map<frame_t, class Frame>& Frames() const;
+  inline const NodeHashMap<rig_t, class Rig>& Rigs() const;
+  inline const NodeHashMap<camera_t, struct Camera>& Cameras() const;
+  inline const NodeHashMap<frame_t, class Frame>& Frames() const;
   inline const std::vector<frame_t>& RegFrameIds() const;
-  inline const std::unordered_map<image_t, class Image>& Images() const;
-  inline const std::unordered_map<point3D_t, struct Point3D>& Points3D() const;
+  inline const NodeHashMap<image_t, class Image>& Images() const;
+  inline const NodeHashMap<point3D_t, struct Point3D>& Points3D() const;
 
-  // Number of images in all registered frames.
-  size_t NumRegImages() const;
   // Identifiers of all registered images.
   std::vector<image_t> RegImageIds() const;
   // Identifiers of all 3D points.
-  std::unordered_set<point3D_t> Point3DIds() const;
+  FlatHashSet<point3D_t> Point3DIds() const;
 
   // Check whether specific object exists.
   inline bool ExistsRig(rig_t rig_id) const;
@@ -104,6 +76,9 @@ class Reconstruction {
   inline bool ExistsFrame(frame_t frame_id) const;
   inline bool ExistsImage(image_t image_id) const;
   inline bool ExistsPoint3D(point3D_t point3D_id) const;
+
+  // Check whether the reconstruction object is internally consistent.
+  bool IsValid() const;
 
   // Load data from given `DatabaseCache`.
   void Load(const DatabaseCache& database_cache);
@@ -121,6 +96,10 @@ class Reconstruction {
   // might be taken by the same camera.
   void AddCamera(struct Camera camera);
 
+  // Add a new camera and also add a rig using the same id rig_id = camera_id,
+  // with the camera being its only sensor.
+  void AddCameraWithTrivialRig(struct Camera camera);
+
   // Add new frame. Its rig must have been added before. If its rig object
   // is unset, it will be automatically populated from the added rigs.
   void AddFrame(class Frame frame);
@@ -129,6 +108,16 @@ class Reconstruction {
   // camera/frame objects are unset, they will be automatically populated from
   // the added cameras.
   void AddImage(class Image image);
+
+  // Add a new image and also add a frame using the same id frame_id = image_id,
+  // with the image being its only data. Here we also assume that the
+  // corresponding rig for the frame has the same id as the corresponding camera
+  // of the image, i.e., rig_id = image.camera_id.
+  void AddImageWithTrivialFrame(class Image image);
+
+  // AddImageWithTrivialFrame and also register the frame with an input pose.
+  void AddImageWithTrivialFrame(class Image image,
+                                const Rigid3d& cam_from_world);
 
   // Add new 3D point with known ID.
   void AddPoint3D(point3D_t point3D_id, struct Point3D point3D);
@@ -158,6 +147,7 @@ class Reconstruction {
   // Delete all 2D points of all images and all 3D points.
   void DeleteAllPoints2DAndPoints3D();
 
+  // Replace all rigs and frames with the given vectors, updating image links.
   void SetRigsAndFrames(std::vector<class Rig> rigs,
                         std::vector<class Frame> frames);
 
@@ -224,23 +214,24 @@ class Reconstruction {
   void UpdatePoint3DErrors();
 
   // Read data from text or binary file. Prefer binary data if it exists.
-  void Read(const std::string& path);
-  void Write(const std::string& path) const;
+  void Read(const std::filesystem::path& path);
+  // Write reconstruction data to disk (binary format).
+  void Write(const std::filesystem::path& path) const;
 
   // Read data from binary/text file.
-  void ReadText(const std::string& path);
-  void ReadBinary(const std::string& path);
+  void ReadText(const std::filesystem::path& path);
+  void ReadBinary(const std::filesystem::path& path);
 
   // Write data from binary/text file.
-  void WriteText(const std::string& path) const;
-  void WriteBinary(const std::string& path) const;
+  void WriteText(const std::filesystem::path& path) const;
+  void WriteBinary(const std::filesystem::path& path) const;
 
   // Convert 3D points in reconstruction to PLY point cloud.
   std::vector<PlyPoint> ConvertToPLY() const;
 
   // Import from other data formats. Note that these import functions are
   // only intended for visualization of data and unusable for reconstruction.
-  void ImportPLY(const std::string& path);
+  void ImportPLY(const std::filesystem::path& path);
   void ImportPLY(const std::vector<PlyPoint>& ply_points);
 
   // Extract colors for 3D points of given image. Colors will be extracted
@@ -252,33 +243,37 @@ class Reconstruction {
   //                      root path and the name of the image.
   //
   // @return              True if image could be read at given path.
-  bool ExtractColorsForImage(image_t image_id, const std::string& path);
+  bool ExtractColorsForImage(image_t image_id,
+                             const std::filesystem::path& path);
 
   // Extract colors for all 3D points by computing the mean color of all images.
   //
   // @param path          Absolute or relative path to root folder of image.
   //                      The image path is determined by concatenating the
   //                      root path and the name of the image.
-  void ExtractColorsForAllImages(const std::string& path);
+  // @param num_threads   Number of threads to use for parallel processing.
+  void ExtractColorsForAllImages(const std::filesystem::path& path,
+                                 int num_threads = -1);
 
   // Create all image sub-directories in the given path.
-  void CreateImageDirs(const std::string& path) const;
+  void CreateImageDirs(const std::filesystem::path& path) const;
 
  private:
   std::pair<Eigen::AlignedBox3d, Eigen::Vector3d> ComputeBBBoxAndCentroid(
       double min_percentile, double max_percentile, bool use_images) const;
 
-  std::unordered_map<rig_t, class Rig> rigs_;
-  std::unordered_map<camera_t, struct Camera> cameras_;
-  std::unordered_map<frame_t, class Frame> frames_;
-  std::unordered_map<image_t, class Image> images_;
-  std::unordered_map<point3D_t, struct Point3D> points3D_;
+  NodeHashMap<rig_t, class Rig> rigs_;
+  NodeHashMap<camera_t, struct Camera> cameras_;
+  NodeHashMap<frame_t, class Frame> frames_;
+  NodeHashMap<image_t, class Image> images_;
+  NodeHashMap<point3D_t, struct Point3D> points3D_;
 
   // Unique set of frame_ids where `Frame(frame_id).HasPose() == true`.
   // Note that we intentionally use a vector instead of a set here leading
   // to O(n) complexity on calls to RegisterFrame/DeRegisterFrame, because
   // we iterate very often over the set of registered frames.
   std::vector<frame_t> reg_frame_ids_;
+  size_t num_reg_images_;
 
   // Total number of added 3D points, used to generate unique identifiers.
   point3D_t max_point3D_id_;
@@ -298,6 +293,8 @@ size_t Reconstruction::NumCameras() const { return cameras_.size(); }
 size_t Reconstruction::NumFrames() const { return frames_.size(); }
 
 size_t Reconstruction::NumRegFrames() const { return reg_frame_ids_.size(); }
+
+size_t Reconstruction::NumRegImages() const { return num_reg_images_; }
 
 size_t Reconstruction::NumImages() const { return images_.size(); }
 
@@ -394,19 +391,17 @@ struct Point3D& Reconstruction::Point3D(const point3D_t point3D_id) {
   }
 }
 
-const std::unordered_map<rig_t, Rig>& Reconstruction::Rigs() const {
-  return rigs_;
-}
+const NodeHashMap<rig_t, Rig>& Reconstruction::Rigs() const { return rigs_; }
 
-const std::unordered_map<camera_t, Camera>& Reconstruction::Cameras() const {
+const NodeHashMap<camera_t, Camera>& Reconstruction::Cameras() const {
   return cameras_;
 }
 
-const std::unordered_map<frame_t, class Frame>& Reconstruction::Frames() const {
+const NodeHashMap<frame_t, class Frame>& Reconstruction::Frames() const {
   return frames_;
 }
 
-const std::unordered_map<image_t, class Image>& Reconstruction::Images() const {
+const NodeHashMap<image_t, class Image>& Reconstruction::Images() const {
   return images_;
 }
 
@@ -414,7 +409,7 @@ const std::vector<frame_t>& Reconstruction::RegFrameIds() const {
   return reg_frame_ids_;
 }
 
-const std::unordered_map<point3D_t, Point3D>& Reconstruction::Points3D() const {
+const NodeHashMap<point3D_t, Point3D>& Reconstruction::Points3D() const {
   return points3D_;
 }
 

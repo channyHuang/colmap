@@ -1,36 +1,12 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/scene/database_cache.h"
 
+#include "colmap/geometry/rigid3_matchers.h"
+#include "colmap/math/random_eigen.h"
 #include "colmap/scene/database_sqlite.h"
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 namespace colmap {
@@ -68,6 +44,15 @@ std::shared_ptr<Database> CreateTestDatabase() {
   image4.SetCameraId(camera2.camera_id);
   image4.SetImageId(database->WriteImage(image4));
 
+  PosePrior pose_prior1;
+  pose_prior1.corr_data_id = image1.DataId();
+  pose_prior1.position = RandomEigenVectord<3>();
+  pose_prior1.pose_prior_id = database->WritePosePrior(pose_prior1);
+  PosePrior pose_prior2;
+  pose_prior1.corr_data_id = image2.DataId();
+  pose_prior2.position = RandomEigenVectord<3>();
+  pose_prior2.pose_prior_id = database->WritePosePrior(pose_prior2);
+
   Frame frame1;
   frame1.SetRigId(rig_id);
   frame1.AddDataId(image1.DataId());
@@ -79,11 +64,6 @@ std::shared_ptr<Database> CreateTestDatabase() {
   frame2.AddDataId(image4.DataId());
   frame2.SetFrameId(database->WriteFrame(frame2));
 
-  database->WritePosePrior(image1.ImageId(),
-                           PosePrior(Eigen::Vector3d::Random()));
-  database->WritePosePrior(image2.ImageId(),
-                           PosePrior(Eigen::Vector3d::Random()));
-
   database->WriteKeypoints(image1.ImageId(), FeatureKeypoints(10));
   database->WriteKeypoints(image2.ImageId(), FeatureKeypoints(5));
   database->WriteKeypoints(image3.ImageId(), FeatureKeypoints(6));
@@ -93,11 +73,11 @@ std::shared_ptr<Database> CreateTestDatabase() {
   two_view_geometry.inlier_matches = {{0, 1}};
   two_view_geometry.config =
       TwoViewGeometry::ConfigurationType::PLANAR_OR_PANORAMIC;
-  two_view_geometry.F = Eigen::Matrix3d::Random();
-  two_view_geometry.E = Eigen::Matrix3d::Random();
-  two_view_geometry.H = Eigen::Matrix3d::Random();
+  two_view_geometry.F = RandomEigenMatrixd<3, 3>();
+  two_view_geometry.E = RandomEigenMatrixd<3, 3>();
+  two_view_geometry.H = RandomEigenMatrixd<3, 3>();
   two_view_geometry.cam2_from_cam1 =
-      Rigid3d(Eigen::Quaterniond::UnitRandom(), Eigen::Vector3d::Random());
+      Rigid3d(RandomEigenQuaterniond(), RandomEigenVectord<3>());
   database->WriteTwoViewGeometry(
       image1.ImageId(), image2.ImageId(), two_view_geometry);
   database->WriteTwoViewGeometry(
@@ -119,10 +99,7 @@ TEST(DatabaseCache, Empty) {
 
 TEST(DatabaseCache, ConstructFromDatabase) {
   auto database = CreateTestDatabase();
-  auto cache = DatabaseCache::Create(*database,
-                                     /*min_num_matches=*/0,
-                                     /*ignore_watermarks=*/false,
-                                     /*image_names=*/{});
+  auto cache = DatabaseCache::Create(*database, {});
 
   EXPECT_EQ(cache->NumRigs(), 1);
   EXPECT_EQ(cache->NumCameras(), 2);
@@ -155,12 +132,7 @@ TEST(DatabaseCache, ConstructFromDatabase) {
   EXPECT_TRUE(cache->ExistsImage(images[3].ImageId()));
   EXPECT_EQ(cache->Image(images[3].ImageId()).NumPoints2D(), 3);
 
-  EXPECT_TRUE(cache->ExistsPosePrior(images[0].ImageId()));
-  EXPECT_TRUE(cache->PosePrior(images[0].ImageId()).IsValid());
-  EXPECT_TRUE(cache->ExistsPosePrior(images[1].ImageId()));
-  EXPECT_TRUE(cache->PosePrior(images[1].ImageId()).IsValid());
-  EXPECT_FALSE(cache->ExistsPosePrior(images[2].ImageId()));
-  EXPECT_FALSE(cache->ExistsPosePrior(images[3].ImageId()));
+  EXPECT_EQ(cache->PosePriors(), database->ReadAllPosePriors());
 
   const auto correspondence_graph = cache->CorrespondenceGraph();
   EXPECT_TRUE(correspondence_graph->ExistsImage(images[0].ImageId()));
@@ -188,11 +160,9 @@ TEST(DatabaseCache, ConstructFromDatabaseWithCustomImages) {
 
   // Note that the first two images are part of the same frame.
   const std::vector<Image> images = database->ReadAllImages();
-  auto cache = DatabaseCache::Create(
-      *database,
-      /*min_num_matches=*/0,
-      /*ignore_watermarks=*/false,
-      /*image_names=*/{images[0].Name(), images[1].Name()});
+  DatabaseCache::Options options;
+  options.image_names = {images[0].Name(), images[1].Name()};
+  auto cache = DatabaseCache::Create(*database, options);
 
   EXPECT_EQ(cache->NumRigs(), 1);
   EXPECT_EQ(cache->NumCameras(), 2);
@@ -231,9 +201,6 @@ std::shared_ptr<Database> CreateLegacyTestDatabase() {
   const image_t image_id1 = database->WriteImage(image1);
   const image_t image_id2 = database->WriteImage(image2);
   const image_t image_id3 = database->WriteImage(image3);
-  database->WritePosePrior(image_id1, PosePrior(Eigen::Vector3d::Random()));
-  database->WritePosePrior(image_id2, PosePrior(Eigen::Vector3d::Random()));
-  database->WritePosePrior(image_id3, PosePrior(Eigen::Vector3d::Random()));
   database->WriteKeypoints(image_id1, FeatureKeypoints(10));
   database->WriteKeypoints(image_id2, FeatureKeypoints(5));
   database->WriteKeypoints(image_id3, FeatureKeypoints(7));
@@ -241,11 +208,11 @@ std::shared_ptr<Database> CreateLegacyTestDatabase() {
   two_view_geometry.inlier_matches = {{0, 1}};
   two_view_geometry.config =
       TwoViewGeometry::ConfigurationType::PLANAR_OR_PANORAMIC;
-  two_view_geometry.F = Eigen::Matrix3d::Random();
-  two_view_geometry.E = Eigen::Matrix3d::Random();
-  two_view_geometry.H = Eigen::Matrix3d::Random();
+  two_view_geometry.F = RandomEigenMatrixd<3, 3>();
+  two_view_geometry.E = RandomEigenMatrixd<3, 3>();
+  two_view_geometry.H = RandomEigenMatrixd<3, 3>();
   two_view_geometry.cam2_from_cam1 =
-      Rigid3d(Eigen::Quaterniond::UnitRandom(), Eigen::Vector3d::Random());
+      Rigid3d(RandomEigenQuaterniond(), RandomEigenVectord<3>());
   database->WriteTwoViewGeometry(image_id1, image_id2, two_view_geometry);
   database->WriteTwoViewGeometry(image_id1, image_id3, two_view_geometry);
 
@@ -254,13 +221,10 @@ std::shared_ptr<Database> CreateLegacyTestDatabase() {
 
 TEST(DatabaseCache, ConstructFromLegacyDatabaseWithoutRigsAndFrames) {
   auto database = CreateLegacyTestDatabase();
-  auto cache = DatabaseCache::Create(*database,
-                                     /*min_num_matches=*/0,
-                                     /*ignore_watermarks=*/false,
-                                     /*image_names=*/{});
+  auto cache = DatabaseCache::Create(*database, {});
   EXPECT_EQ(cache->NumCameras(), 1);
   EXPECT_EQ(cache->NumImages(), 3);
-  EXPECT_EQ(cache->NumPosePriors(), 3);
+  EXPECT_EQ(cache->NumPosePriors(), 0);
   EXPECT_TRUE(cache->ExistsCamera(1));
   EXPECT_EQ(cache->Camera(1).model_id, CameraModelId::kSimplePinhole);
   EXPECT_TRUE(cache->ExistsImage(1));
@@ -269,9 +233,6 @@ TEST(DatabaseCache, ConstructFromLegacyDatabaseWithoutRigsAndFrames) {
   EXPECT_EQ(cache->Image(1).NumPoints2D(), 10);
   EXPECT_EQ(cache->Image(2).NumPoints2D(), 5);
   EXPECT_EQ(cache->Image(3).NumPoints2D(), 7);
-  EXPECT_TRUE(cache->PosePrior(1).IsValid());
-  EXPECT_TRUE(cache->PosePrior(2).IsValid());
-  EXPECT_TRUE(cache->PosePrior(3).IsValid());
   const auto correspondence_graph = cache->CorrespondenceGraph();
   EXPECT_TRUE(cache->CorrespondenceGraph()->ExistsImage(1));
   EXPECT_EQ(cache->CorrespondenceGraph()->NumCorrespondencesForImage(1), 2);
@@ -287,22 +248,18 @@ TEST(DatabaseCache, ConstructFromLegacyDatabaseWithoutRigsAndFrames) {
 TEST(DatabaseCache, ConstructFromLegacyDatabaseWithCustomImages) {
   auto database = CreateLegacyTestDatabase();
   const std::vector<Image> images = database->ReadAllImages();
-  auto cache = DatabaseCache::Create(
-      *database,
-      /*min_num_matches=*/0,
-      /*ignore_watermarks=*/false,
-      /*image_names=*/{images[0].Name(), images[2].Name()});
+  DatabaseCache::Options options;
+  options.image_names = {images[0].Name(), images[2].Name()};
+  auto cache = DatabaseCache::Create(*database, options);
   EXPECT_EQ(cache->NumCameras(), 1);
   EXPECT_EQ(cache->NumImages(), 2);
-  EXPECT_EQ(cache->NumPosePriors(), 2);
+  EXPECT_EQ(cache->NumPosePriors(), 0);
   EXPECT_TRUE(cache->ExistsCamera(1));
   EXPECT_EQ(cache->Camera(1).model_id, CameraModelId::kSimplePinhole);
   EXPECT_TRUE(cache->ExistsImage(1));
   EXPECT_TRUE(cache->ExistsImage(3));
   EXPECT_EQ(cache->Image(1).NumPoints2D(), 10);
   EXPECT_EQ(cache->Image(3).NumPoints2D(), 7);
-  EXPECT_TRUE(cache->PosePrior(1).IsValid());
-  EXPECT_TRUE(cache->PosePrior(3).IsValid());
   const auto correspondence_graph = cache->CorrespondenceGraph();
   EXPECT_TRUE(cache->CorrespondenceGraph()->ExistsImage(1));
   EXPECT_EQ(cache->CorrespondenceGraph()->NumCorrespondencesForImage(1), 1);
@@ -340,7 +297,12 @@ TEST(DatabaseCache, ConstructFromCustom) {
   image.SetName("image");
   image.SetCameraId(kCameraId);
   cache.AddImage(image);
-  cache.AddPosePrior(kImageId, PosePrior(Eigen::Vector3d::Random()));
+
+  constexpr pose_prior_t kPosePriorId = 45;
+  PosePrior pose_prior;
+  pose_prior.position = RandomEigenVectord<3>();
+  pose_prior.pose_prior_id = kPosePriorId;
+  cache.AddPosePrior(pose_prior);
 
   EXPECT_EQ(cache.NumCameras(), 1);
   EXPECT_EQ(cache.NumImages(), 1);
@@ -349,7 +311,150 @@ TEST(DatabaseCache, ConstructFromCustom) {
   EXPECT_TRUE(cache.ExistsCamera(kCameraId));
   EXPECT_TRUE(cache.ExistsFrame(kFrameId));
   EXPECT_TRUE(cache.ExistsImage(kImageId));
-  EXPECT_TRUE(cache.ExistsPosePrior(kImageId));
+  EXPECT_THAT(cache.PosePriors(), testing::ElementsAre(pose_prior));
+}
+
+TEST(DatabaseCache, NonConstCorrespondenceGraph) {
+  auto database = CreateTestDatabase();
+  auto cache = DatabaseCache::Create(*database, {});
+
+  // Non-const overload returns a mutable shared_ptr.
+  std::shared_ptr<CorrespondenceGraph> mutable_graph =
+      cache->CorrespondenceGraph();
+  EXPECT_NE(mutable_graph, nullptr);
+
+  // Verify it can be used to update a two-view geometry.
+  const auto image_pairs = mutable_graph->ImagePairs();
+  ASSERT_FALSE(image_pairs.empty());
+  const auto [image_id1, image_id2] = PairIdToImagePair(image_pairs[0]);
+
+  TwoViewGeometry geom = mutable_graph->ExtractTwoViewGeometry(
+      image_id1, image_id2, /*extract_inlier_matches=*/false);
+  const Rigid3d new_pose(RandomEigenQuaterniond(), RandomEigenVectord<3>());
+  geom.cam2_from_cam1 = new_pose;
+  mutable_graph->UpdateTwoViewGeometry(image_id1, image_id2, geom);
+
+  // Read back through the const accessor and verify the update is visible.
+  const DatabaseCache& const_cache = *cache;
+  TwoViewGeometry updated =
+      const_cache.CorrespondenceGraph()->ExtractTwoViewGeometry(
+          image_id1, image_id2, false);
+  ASSERT_TRUE(updated.cam2_from_cam1.has_value());
+  EXPECT_THAT(updated.cam2_from_cam1.value(),
+              Rigid3dNear(new_pose, 1e-6, 1e-6));
+}
+
+TEST(DatabaseCache, SkipsUndefinedAndDegenerateGeometries) {
+  auto database = Database::Open(kInMemorySqliteDatabasePath);
+
+  const Camera camera = Camera::CreateFromModelId(
+      kInvalidCameraId, SimplePinholeCameraModel::model_id, 1, 1, 1);
+  const camera_t camera_id = database->WriteCamera(camera);
+  Image image1;
+  image1.SetName("image1");
+  image1.SetCameraId(camera_id);
+  Image image2;
+  image2.SetName("image2");
+  image2.SetCameraId(camera_id);
+  Image image3;
+  image3.SetName("image3");
+  image3.SetCameraId(camera_id);
+  const image_t image_id1 = database->WriteImage(image1);
+  const image_t image_id2 = database->WriteImage(image2);
+  const image_t image_id3 = database->WriteImage(image3);
+  database->WriteKeypoints(image_id1, FeatureKeypoints(10));
+  database->WriteKeypoints(image_id2, FeatureKeypoints(10));
+  database->WriteKeypoints(image_id3, FeatureKeypoints(10));
+
+  // Same inlier matches under different configs: only the meaningfully
+  // labeled pair may enter the correspondence graph.
+  TwoViewGeometry good_geometry;
+  good_geometry.inlier_matches = {{0, 0}, {1, 1}};
+  good_geometry.config = TwoViewGeometry::ConfigurationType::CALIBRATED;
+  database->WriteTwoViewGeometry(image_id1, image_id2, good_geometry);
+
+  TwoViewGeometry degenerate_geometry = good_geometry;
+  degenerate_geometry.config = TwoViewGeometry::ConfigurationType::DEGENERATE;
+  database->WriteTwoViewGeometry(image_id2, image_id3, degenerate_geometry);
+
+  TwoViewGeometry undefined_geometry = good_geometry;
+  undefined_geometry.config = TwoViewGeometry::ConfigurationType::UNDEFINED;
+  database->WriteTwoViewGeometry(image_id1, image_id3, undefined_geometry);
+
+  const auto cache = DatabaseCache::Create(*database, {});
+  const auto correspondence_graph = cache->CorrespondenceGraph();
+  EXPECT_EQ(correspondence_graph->NumMatchesBetweenImages(image_id1, image_id2),
+            2);
+  EXPECT_EQ(correspondence_graph->NumMatchesBetweenImages(image_id2, image_id3),
+            0);
+  EXPECT_EQ(correspondence_graph->NumMatchesBetweenImages(image_id1, image_id3),
+            0);
+}
+
+TEST(DatabaseCache, CreateFromCacheSkipsUndefinedGeometries) {
+  auto database = Database::Open(kInMemorySqliteDatabasePath);
+
+  const Camera camera = Camera::CreateFromModelId(
+      kInvalidCameraId, SimplePinholeCameraModel::model_id, 1, 1, 1);
+  const camera_t camera_id = database->WriteCamera(camera);
+  Image image1;
+  image1.SetName("image1");
+  image1.SetCameraId(camera_id);
+  Image image2;
+  image2.SetName("image2");
+  image2.SetCameraId(camera_id);
+  Image image3;
+  image3.SetName("image3");
+  image3.SetCameraId(camera_id);
+  Image image4;
+  image4.SetName("image4");
+  image4.SetCameraId(camera_id);
+  const image_t image_id1 = database->WriteImage(image1);
+  const image_t image_id2 = database->WriteImage(image2);
+  const image_t image_id3 = database->WriteImage(image3);
+  const image_t image_id4 = database->WriteImage(image4);
+  database->WriteKeypoints(image_id1, FeatureKeypoints(10));
+  database->WriteKeypoints(image_id2, FeatureKeypoints(10));
+  database->WriteKeypoints(image_id3, FeatureKeypoints(10));
+  database->WriteKeypoints(image_id4, FeatureKeypoints(10));
+
+  TwoViewGeometry good_geometry;
+  good_geometry.inlier_matches = {{0, 0}, {1, 1}};
+  good_geometry.config = TwoViewGeometry::ConfigurationType::CALIBRATED;
+  database->WriteTwoViewGeometry(image_id1, image_id2, good_geometry);
+  database->WriteTwoViewGeometry(image_id2, image_id3, good_geometry);
+  database->WriteTwoViewGeometry(image_id3, image_id4, good_geometry);
+
+  const auto source = DatabaseCache::Create(*database, {});
+
+  // Inject UNDEFINED pairs directly into the in-memory graph, as found in
+  // databases written before verification stopped storing them (they can no
+  // longer be written through the database API).
+  TwoViewGeometry undefined_geometry = good_geometry;
+  undefined_geometry.config = TwoViewGeometry::ConfigurationType::UNDEFINED;
+  // Pair (3, 4) is image4's only pair: image4 must be dropped.
+  source->CorrespondenceGraph()->UpdateTwoViewGeometry(
+      image_id3, image_id4, undefined_geometry);
+  // Pair (1, 3) connects two otherwise-connected images: the edge must be
+  // dropped while both images are kept.
+  source->CorrespondenceGraph()->AddTwoViewGeometry(
+      image_id1, image_id3, undefined_geometry);
+
+  const auto filtered = DatabaseCache::CreateFromCache(*source, {});
+  EXPECT_TRUE(filtered->ExistsImage(image_id1));
+  EXPECT_TRUE(filtered->ExistsImage(image_id2));
+  EXPECT_TRUE(filtered->ExistsImage(image_id3));
+  EXPECT_FALSE(filtered->ExistsImage(image_id4));
+
+  const auto correspondence_graph = filtered->CorrespondenceGraph();
+  EXPECT_EQ(correspondence_graph->NumMatchesBetweenImages(image_id1, image_id2),
+            2);
+  EXPECT_EQ(correspondence_graph->NumMatchesBetweenImages(image_id2, image_id3),
+            2);
+  EXPECT_EQ(correspondence_graph->NumMatchesBetweenImages(image_id1, image_id3),
+            0);
+  EXPECT_EQ(correspondence_graph->NumMatchesBetweenImages(image_id3, image_id4),
+            0);
 }
 
 }  // namespace

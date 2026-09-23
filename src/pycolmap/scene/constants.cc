@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include "colmap/util/types.h"
 
 #include <pybind11/pybind11.h>
@@ -11,4 +13,8 @@ void BindConstants(py::module& m) {
   m.attr("INVALID_IMAGE_PAIR_ID") = colmap::kInvalidImagePairId;
   m.attr("INVALID_POINT2D_IDX") = colmap::kInvalidPoint2DIdx;
   m.attr("INVALID_POINT3D_ID") = colmap::kInvalidPoint3DId;
+  m.attr("INVALID_POSE_PRIOR_ID") = colmap::kInvalidPosePriorId;
+  m.attr("INVALID_SENSOR_ID") = colmap::kInvalidSensorId;
+  m.attr("INVALID_DATA_ID") = colmap::kInvalidDataId;
+  m.attr("INVALID_TIMESTAMP") = colmap::kInvalidTimestamp;
 }

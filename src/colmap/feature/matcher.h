@@ -1,60 +1,42 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #pragma once
 
-#include "colmap/feature/index.h"
 #include "colmap/feature/types.h"
-#include "colmap/geometry/gps.h"
+#include "colmap/geometry/pose_prior.h"
 #include "colmap/scene/camera.h"
-#include "colmap/scene/database.h"
-#include "colmap/scene/image.h"
 #include "colmap/scene/two_view_geometry.h"
-#include "colmap/util/cache.h"
 #include "colmap/util/types.h"
 
 #include <memory>
-#include <mutex>
-#include <optional>
-#include <unordered_map>
+#include <string>
 
 namespace colmap {
 
-MAKE_ENUM_CLASS_OVERLOAD_STREAM(FeatureMatcherType, 0, SIFT);
-
 struct SiftMatchingOptions;
+struct AlikedMatchingOptions;
+struct LomaMatchingOptions;
 
-struct FeatureMatchingOptions {
+struct FeatureMatchingTypeOptions {
+  explicit FeatureMatchingTypeOptions();
+
+  std::shared_ptr<SiftMatchingOptions> sift;
+  std::shared_ptr<AlikedMatchingOptions> aliked;
+  std::shared_ptr<LomaMatchingOptions> loma;
+
+  FeatureMatchingTypeOptions(const FeatureMatchingTypeOptions& other);
+  FeatureMatchingTypeOptions& operator=(
+      const FeatureMatchingTypeOptions& other);
+  FeatureMatchingTypeOptions(FeatureMatchingTypeOptions&& other) = default;
+  FeatureMatchingTypeOptions& operator=(FeatureMatchingTypeOptions&& other) =
+      default;
+};
+
+struct FeatureMatchingOptions : public FeatureMatchingTypeOptions {
   explicit FeatureMatchingOptions(
-      FeatureMatcherType type = FeatureMatcherType::SIFT);
+      FeatureMatcherType type = FeatureMatcherType::SIFT_BRUTEFORCE);
 
-  FeatureMatcherType type = FeatureMatcherType::SIFT;
+  FeatureMatcherType type = FeatureMatcherType::SIFT_BRUTEFORCE;
 
   // Number of threads for feature matching and geometric verification.
   int num_threads = -1;
@@ -76,16 +58,24 @@ struct FeatureMatchingOptions {
   // Whether to perform guided matching.
   bool guided_matching = false;
 
+  // Skips the geometric verification stage and forwards matches unchanged.
+  // This option is ignored when guided matching is enabled, because guided
+  // matching depends on the two-view geometry produced by geometric
+  // verification.
+  bool skip_geometric_verification = false;
+
   // Whether to perform geometric verification using rig constraints
   // between pairs of non-trivial frames. If disabled, performs geometric
   // two-view verification for non-trivial frames without rig constraints.
+  // This option is ignored when skip_geometric_verification is true.
   bool rig_verification = false;
 
   // Whether to skip matching images within the same frame.
   // This is useful for the case of non-overlapping cameras in a rig.
   bool skip_image_pairs_in_same_frame = false;
 
-  std::shared_ptr<SiftMatchingOptions> sift;
+  // Whether the selected matcher requires OpenGL.
+  bool RequiresOpenGL() const;
 
   bool Check() const;
 };
@@ -98,11 +88,10 @@ class FeatureMatcher {
     // Unique identifier for the image. Allows a matcher to cache some
     // computations per image in consecutive calls to matching.
     image_t image_id = kInvalidImageId;
-    // Sensor dimension in pixels of the image's camera.
-    int width = 0;
-    int height = 0;
+    const Camera* camera = nullptr;
     std::shared_ptr<const FeatureKeypoints> keypoints;
     std::shared_ptr<const FeatureDescriptors> descriptors;
+    const PosePrior* pose_prior = nullptr;
   };
 
   static std::unique_ptr<FeatureMatcher> Create(
@@ -116,76 +105,6 @@ class FeatureMatcher {
                            const Image& image1,
                            const Image& image2,
                            TwoViewGeometry* two_view_geometry) = 0;
-};
-
-// Cache for feature matching to minimize database access during matching.
-class FeatureMatcherCache {
- public:
-  FeatureMatcherCache(size_t cache_size,
-                      const std::shared_ptr<Database>& database);
-
-  // Executes a function that accesses the database. This function is thread
-  // safe and ensures that only one function can access the database at a time.
-  void AccessDatabase(const std::function<void(Database& database)>& func);
-
-  const Camera& GetCamera(camera_t camera_id);
-  const Frame& GetFrame(frame_t frame_id);
-  const Image& GetImage(image_t image_id);
-  const PosePrior* GetPosePriorOrNull(image_t image_id);
-  std::shared_ptr<FeatureKeypoints> GetKeypoints(image_t image_id);
-  std::shared_ptr<FeatureDescriptors> GetDescriptors(image_t image_id);
-  FeatureMatches GetMatches(image_t image_id1, image_t image_id2);
-  TwoViewGeometry GetTwoViewGeometry(image_t image_id1, image_t image_id2);
-  std::vector<frame_t> GetFrameIds();
-  std::vector<image_t> GetImageIds();
-  ThreadSafeLRUCache<image_t, FeatureDescriptorIndex>&
-  GetFeatureDescriptorIndexCache();
-
-  bool ExistsKeypoints(image_t image_id);
-  bool ExistsDescriptors(image_t image_id);
-
-  bool ExistsMatches(image_t image_id1, image_t image_id2);
-  bool ExistsTwoViewGeometry(image_t image_id1, image_t image_id2);
-  bool ExistsInlierMatches(image_t image_id1, image_t image_id2);
-
-  void UpdateTwoViewGeometry(image_t image_id1,
-                             image_t image_id2,
-                             const TwoViewGeometry& two_view_geometry);
-
-  void WriteMatches(image_t image_id1,
-                    image_t image_id2,
-                    const FeatureMatches& matches);
-  void WriteTwoViewGeometry(image_t image_id1,
-                            image_t image_id2,
-                            const TwoViewGeometry& two_view_geometry);
-
-  void DeleteMatches(image_t image_id1, image_t image_id2);
-  void DeleteTwoViewGeometry(image_t image_id1, image_t image_id2);
-  void DeleteInlierMatches(image_t image_id1, image_t image_id2);
-
-  size_t MaxNumKeypoints();
-
- private:
-  void MaybeLoadCameras();
-  void MaybeLoadFrames();
-  void MaybeLoadImages();
-  void MaybeLoadPosePriors();
-
-  const size_t cache_size_;
-  const std::shared_ptr<Database> database_;
-  std::mutex database_mutex_;
-  std::unique_ptr<std::unordered_map<camera_t, Camera>> cameras_cache_;
-  std::unique_ptr<std::unordered_map<frame_t, Frame>> frames_cache_;
-  std::unique_ptr<std::unordered_map<image_t, Image>> images_cache_;
-  std::unique_ptr<std::unordered_map<image_t, PosePrior>> pose_priors_cache_;
-  std::unique_ptr<ThreadSafeLRUCache<image_t, FeatureKeypoints>>
-      keypoints_cache_;
-  std::unique_ptr<ThreadSafeLRUCache<image_t, FeatureDescriptors>>
-      descriptors_cache_;
-  std::unique_ptr<ThreadSafeLRUCache<image_t, bool>> keypoints_exists_cache_;
-  std::unique_ptr<ThreadSafeLRUCache<image_t, bool>> descriptors_exists_cache_;
-  ThreadSafeLRUCache<image_t, FeatureDescriptorIndex> descriptor_index_cache_;
-  std::optional<size_t> max_num_keypoints_;
 };
 
 }  // namespace colmap

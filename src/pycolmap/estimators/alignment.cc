@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include "colmap/estimators/alignment.h"
 
 #include "colmap/exe/model.h"
@@ -7,6 +9,7 @@
 #include "colmap/util/logging.h"
 
 #include "pycolmap/pybind11_extension.h"
+#include "pycolmap/scene/types.h"
 
 #include <pybind11/eigen.h>
 #include <pybind11/pybind11.h>

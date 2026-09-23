@@ -1,40 +1,12 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/retrieval/vote_and_verify.h"
 
-#include "colmap/estimators/affine_transform.h"
+#include "colmap/estimators/solvers/affine_transform.h"
 #include "colmap/optim/ransac.h"
 #include "colmap/util/eigen_alignment.h"
+#include "colmap/util/hash_containers.h"
 #include "colmap/util/logging.h"
-
-#include <unordered_map>
 
 #include <Eigen/Geometry>
 
@@ -206,8 +178,8 @@ size_t ComputeEffectiveInlierCount(
   for (const auto& coord : inlier_coords) {
     const int c_x = (coord.first - min_x) * scale_x;
     const int c_y = (coord.second - min_y) * scale_y;
-    counter(std::max(0, std::min(num_bins - 1, c_x)),
-            std::max(0, std::min(num_bins - 1, c_y))) = 1;
+    counter(std::clamp(c_x, 0, num_bins - 1),
+            std::clamp(c_y, 0, num_bins - 1)) = 1;
   }
 
   return counter.sum();
@@ -248,7 +220,7 @@ int VoteAndVerify(const VoteAndVerifyOptions& options,
   // Fill the multi-resolution voting histogram.
   //////////////////////////////////////////////////////////////////////////////
 
-  std::vector<std::unordered_map<size_t, VotingBin>> bins(options.num_levels);
+  std::vector<NodeHashMap<size_t, VotingBin>> bins(options.num_levels);
   for (auto& levelBins : bins) {
     levelBins.reserve(num_matches);
   }
@@ -407,28 +379,30 @@ int VoteAndVerify(const VoteAndVerifyOptions& options,
     std::vector<Eigen::Matrix2x3d> models;
     AffineTransformEstimator::Estimate(
         best_inlier_points1, best_inlier_points2, &models);
-    THROW_CHECK_EQ(models.size(), 1);
-    const Eigen::Matrix2x3d& A = models[0];
-    Eigen::Matrix3d A_homogeneous = Eigen::Matrix3d::Identity();
-    A_homogeneous.topRows<2>() = A;
-    const Eigen::Matrix2x3d inv_A = A_homogeneous.inverse().topRows<2>();
+    if (!models.empty()) {
+      THROW_CHECK_EQ(models.size(), 1);
+      const Eigen::Matrix2x3d& A12 = models[0];
+      Eigen::Matrix3d A_homogeneous = Eigen::Matrix3d::Identity();
+      A_homogeneous.topRows<2>() = A12;
+      const Eigen::Matrix2x3d A21 = A_homogeneous.inverse().topRows<2>();
 
-    TwoWayTransform local_tform;
-    local_tform.A12 = A.leftCols<2>().cast<float>();
-    local_tform.t12 = A.rightCols<1>().cast<float>();
-    local_tform.A21 = inv_A.leftCols<2>().cast<float>();
-    local_tform.t21 = inv_A.rightCols<1>().cast<float>();
+      TwoWayTransform local_tform;
+      local_tform.A12 = A12.leftCols<2>().cast<float>();
+      local_tform.t12 = A12.rightCols<1>().cast<float>();
+      local_tform.A21 = A21.leftCols<2>().cast<float>();
+      local_tform.t21 = A21.rightCols<1>().cast<float>();
 
-    ComputeInliers(local_tform,
-                   matches,
-                   options.max_transfer_error,
-                   options.max_scale_error,
-                   best_num_inliers,
-                   &inlier_idxs);
+      ComputeInliers(local_tform,
+                     matches,
+                     options.max_transfer_error,
+                     options.max_scale_error,
+                     best_num_inliers,
+                     &inlier_idxs);
 
-    if (inlier_idxs.size() > best_num_inliers) {
-      best_num_inliers = inlier_idxs.size();
-      best_tform = local_tform;
+      if (inlier_idxs.size() > best_num_inliers) {
+        best_num_inliers = inlier_idxs.size();
+        best_tform = local_tform;
+      }
     }
   }
 

@@ -1,32 +1,4 @@
-# Copyright (c), ETH Zurich and UNC Chapel Hill.
-# All rights reserved.
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-#     * Redistributions of source code must retain the above copyright
-#       notice, this list of conditions and the following disclaimer.
-#
-#     * Redistributions in binary form must reproduce the above copyright
-#       notice, this list of conditions and the following disclaimer in the
-#       documentation and/or other materials provided with the distribution.
-#
-#     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-#       its contributors may be used to endorse or promote products derived
-#       from this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-# POSSIBILITY OF SUCH DAMAGE.
-
+# SPDX-License-Identifier: BSD-3-Clause
 
 # Find package module for CHOLMOD library.
 #
@@ -55,16 +27,30 @@ if(TARGET CHOLMOD::CHOLMOD)
     message(STATUS "Found CHOLMOD")
     message(STATUS "  Target : CHOLMOD::CHOLMOD")
 else()
-    find_path(CHOLMOD_INCLUDE_DIRS
-        NAMES
-        suitesparse/cholmod.h
-        PATHS
+    list(APPEND CHOLMOD_INCLUDE_SEARCH_PATHS
         ${CHOLMOD_INCLUDE_DIR_HINTS}
         /usr/include
         /usr/local/include
         /sw/include
         /opt/include
         /opt/local/include)
+
+    # Some distros don't package suitesparse under a /suitesparse subdirectory (e.g. NixOS).
+    # Search for both layouts separately so that the suitesparse/ subdirectory
+    # layout is reliably preferred across all search paths.  A single find_path
+    # call with both names would iterate search paths first and names second,
+    # which could pick up a bare cholmod.h from an earlier path over
+    # suitesparse/cholmod.h from a later one.
+    find_path(CHOLMOD_INCLUDE_DIRS
+        NAMES suitesparse/cholmod.h
+        PATHS ${CHOLMOD_INCLUDE_SEARCH_PATHS})
+    if(NOT CHOLMOD_INCLUDE_DIRS)
+        unset(CHOLMOD_INCLUDE_DIRS CACHE)
+        find_path(CHOLMOD_INCLUDE_DIRS
+            NAMES cholmod.h
+            PATHS ${CHOLMOD_INCLUDE_SEARCH_PATHS})
+    endif()
+
     find_library(CHOLMOD_LIBRARIES
         NAMES
         cholmod
@@ -87,9 +73,15 @@ else()
         set(CHOLMOD_FOUND FALSE)
     endif()
 
+    if(EXISTS "${CHOLMOD_INCLUDE_DIRS}/suitesparse/cholmod.h")
+        set(CHOLMOD_INTERFACE_INCLUDE_DIRS "${CHOLMOD_INCLUDE_DIRS}/suitesparse")
+    else()
+        set(CHOLMOD_INTERFACE_INCLUDE_DIRS "${CHOLMOD_INCLUDE_DIRS}")
+    endif()
+
     add_library(CHOLMOD::CHOLMOD INTERFACE IMPORTED)
     target_include_directories(
-        CHOLMOD::CHOLMOD INTERFACE ${CHOLMOD_INCLUDE_DIRS}/suitesparse)
+        CHOLMOD::CHOLMOD INTERFACE ${CHOLMOD_INTERFACE_INCLUDE_DIRS})
     target_link_libraries(
         CHOLMOD::CHOLMOD INTERFACE ${CHOLMOD_LIBRARIES})
 endif()

@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/mvs/fusion.h"
 
@@ -33,9 +6,12 @@
 #include "colmap/util/eigen_alignment.h"
 #include "colmap/util/endian.h"
 #include "colmap/util/file.h"
+#include "colmap/util/hash_containers.h"
 #include "colmap/util/misc.h"
 #include "colmap/util/threading.h"
 #include "colmap/util/timer.h"
+
+#include <fstream>
 
 #include <Eigen/Geometry>
 
@@ -72,8 +48,8 @@ int FindNextImage(const std::vector<std::vector<int>>& overlapping_images,
 }  // namespace internal
 
 void StereoFusionOptions::Print() const {
-#define PrintOption(option) LOG(INFO) << #option ": " << (option) << '\n';
-  PrintHeading2("StereoFusion::Options");
+#define PrintOption(option) LOG(INFO) << #option ": " << (option);
+  LOG_HEADING2("StereoFusion::Options");
   PrintOption(mask_path);
   PrintOption(max_image_size);
   PrintOption(min_num_pixels);
@@ -93,8 +69,7 @@ void StereoFusionOptions::Print() const {
 }
 
 bool StereoFusionOptions::Check() const {
-  CHECK_OPTION_GE(min_num_pixels, 0);
-  CHECK_OPTION_LE(min_num_pixels, max_num_pixels);
+  CHECK_OPTION_IN(min_num_pixels, 0, max_num_pixels);
   CHECK_OPTION_GT(max_traversal_depth, 0);
   CHECK_OPTION_GE(max_reproj_error, 0);
   CHECK_OPTION_GE(max_depth_error, 0);
@@ -105,7 +80,7 @@ bool StereoFusionOptions::Check() const {
 }
 
 StereoFusion::StereoFusion(const StereoFusionOptions& options,
-                           const std::string& workspace_path,
+                           const std::filesystem::path& workspace_path,
                            const std::string& workspace_format,
                            const std::string& pmvs_option_name,
                            const std::string& input_type)
@@ -157,8 +132,8 @@ void StereoFusion::Run() {
   workspace_options.workspace_format = workspace_format_;
   workspace_options.input_type = input_type_;
 
-  const auto image_names = ReadTextFileLines(JoinPaths(
-      workspace_path_, workspace_options.stereo_folder, "fusion.cfg"));
+  const auto image_names = ReadTextFileLines(
+      workspace_path_ / workspace_options.stereo_folder / "fusion.cfg");
   int num_threads = 1;
   if (options_.use_cache) {
     workspace_ = std::make_unique<CachedWorkspace>(workspace_options);
@@ -342,22 +317,20 @@ void StereoFusion::InitFusedPixelMask(int image_idx,
   Mat<char>& fused_pixel_mask = fused_pixel_masks_.at(image_idx);
   const std::string mask_image_name =
       workspace_->GetModel().GetImageName(image_idx);
-  std::string mask_path =
-      JoinPaths(options_.mask_path, mask_image_name + ".png");
+  auto mask_path = options_.mask_path / (mask_image_name + ".png");
   if (!ExistsFile(mask_path) && HasFileExtension(mask_image_name, ".png")) {
-    mask_path = JoinPaths(options_.mask_path, mask_image_name);
+    mask_path = options_.mask_path / mask_image_name;
   }
   fused_pixel_mask = Mat<char>(width, height, 1);
   if (!options_.mask_path.empty() && ExistsFile(mask_path) &&
       mask.Read(mask_path, false)) {
-    BitmapColor<uint8_t> color;
     mask.Rescale(static_cast<int>(width),
                  static_cast<int>(height),
                  Bitmap::RescaleFilter::kBox);
     for (size_t row = 0; row < height; ++row) {
       for (size_t col = 0; col < width; ++col) {
-        mask.GetPixel(col, row, &color);
-        fused_pixel_mask.Set(row, col, color.r == 0 ? 1 : 0);
+        const auto color = mask.GetPixel(col, row);
+        fused_pixel_mask.Set(row, col, (!color || color->r == 0) ? 1 : 0);
       }
     }
   } else {
@@ -386,7 +359,7 @@ void StereoFusion::Fuse(const int thread_id,
   std::vector<uint8_t> fused_point_r;
   std::vector<uint8_t> fused_point_g;
   std::vector<uint8_t> fused_point_b;
-  std::unordered_set<int> fused_point_visibility;
+  FlatHashSet<int> fused_point_visibility;
 
   while (!fusion_queue.empty()) {
     const auto data = fusion_queue.back();
@@ -454,10 +427,12 @@ void StereoFusion::Fuse(const int thread_id,
         Eigen::Vector4f(col * depth, row * depth, depth, 1.0f);
 
     // Read the color of the pixel.
-    BitmapColor<uint8_t> color;
     const auto& bitmap_scale = bitmap_scales_.at(image_idx);
-    workspace_->GetBitmap(image_idx).InterpolateNearestNeighbor(
-        col / bitmap_scale.first, row / bitmap_scale.second, &color);
+    const auto color =
+        workspace_->GetBitmap(image_idx)
+            .InterpolateNearestNeighbor(col / bitmap_scale.first,
+                                        row / bitmap_scale.second)
+            .value_or(BitmapColor<uint8_t>(0));
 
     // Set the current pixel as visited.
     fused_pixel_mask.Set(row, col, 1);
@@ -556,7 +531,7 @@ void StereoFusion::Fuse(const int thread_id,
 }
 
 void WritePointsVisibility(
-    const std::string& path,
+    const std::filesystem::path& path,
     const std::vector<std::vector<int>>& points_visibility) {
   std::fstream file(path, std::ios::out | std::ios::binary);
   THROW_CHECK_FILE_OPEN(file, path);
@@ -569,6 +544,26 @@ void WritePointsVisibility(
       WriteBinaryLittleEndian<uint32_t>(&file, image_idx);
     }
   }
+}
+
+std::vector<std::vector<int>> ReadPointsVisibility(
+    const std::filesystem::path& path, size_t num_points) {
+  std::fstream file(path, std::ios::in | std::ios::binary);
+  THROW_CHECK_FILE_OPEN(file, path);
+
+  const size_t file_num_points = ReadBinaryLittleEndian<uint64_t>(&file);
+  THROW_CHECK_EQ(file_num_points, num_points);
+
+  std::vector<std::vector<int>> visibility(num_points);
+  for (size_t i = 0; i < num_points; ++i) {
+    const uint32_t num_visible = ReadBinaryLittleEndian<uint32_t>(&file);
+    visibility[i].resize(num_visible);
+    for (uint32_t j = 0; j < num_visible; ++j) {
+      visibility[i][j] =
+          static_cast<int>(ReadBinaryLittleEndian<uint32_t>(&file));
+    }
+  }
+  return visibility;
 }
 
 }  // namespace mvs

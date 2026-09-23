@@ -1,37 +1,10 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/sfm/incremental_triangulator.h"
 
 #include "colmap/estimators/triangulation.h"
 #include "colmap/scene/projection.h"
-#include "colmap/util/misc.h"
+#include "colmap/util/hash_containers.h"
 
 namespace colmap {
 namespace {
@@ -75,8 +48,7 @@ bool IncrementalTriangulator::Options::Check() const {
   CHECK_OPTION_GT(complete_max_reproj_error, 0);
   CHECK_OPTION_GE(complete_max_transitivity, 0);
   CHECK_OPTION_GT(re_max_angle_error, 0);
-  CHECK_OPTION_GE(re_min_ratio, 0);
-  CHECK_OPTION_LE(re_min_ratio, 1);
+  CHECK_OPTION_IN(re_min_ratio, 0, 1);
   CHECK_OPTION_GE(re_max_trials, 0);
   CHECK_OPTION_GT(min_angle, 0);
   CHECK_OPTION_GE(random_seed, -1);
@@ -247,7 +219,7 @@ size_t IncrementalTriangulator::CompleteImage(const Options& options,
 }
 
 size_t IncrementalTriangulator::CompleteTracks(
-    const Options& options, const std::unordered_set<point3D_t>& point3D_ids) {
+    const Options& options, const FlatHashSet<point3D_t>& point3D_ids) {
   THROW_CHECK(options.Check());
 
   size_t num_completed = 0;
@@ -276,7 +248,7 @@ size_t IncrementalTriangulator::CompleteAllTracks(const Options& options) {
 }
 
 size_t IncrementalTriangulator::MergeTracks(
-    const Options& options, const std::unordered_set<point3D_t>& point3D_ids) {
+    const Options& options, const FlatHashSet<point3D_t>& point3D_ids) {
   THROW_CHECK(options.Check());
 
   size_t num_merged = 0;
@@ -314,6 +286,7 @@ size_t IncrementalTriangulator::Retriangulate(const Options& options) {
   Options re_options = options;
   re_options.continue_max_angle_error = options.re_max_angle_error;
 
+  FeatureMatches matches;
   for (const auto& image_pair : obs_manager_->ImagePairs()) {
     // Only perform retriangulation for under-reconstructed image pairs.
     const double tri_ratio =
@@ -354,13 +327,12 @@ size_t IncrementalTriangulator::Retriangulate(const Options& options) {
 
     // Find correspondences and perform retriangulation.
 
-    const FeatureMatches& corrs =
-        correspondence_graph_->FindCorrespondencesBetweenImages(image_id1,
-                                                                image_id2);
+    correspondence_graph_->ExtractMatchesBetweenImages(
+        image_id1, image_id2, matches);
 
-    for (const auto& corr : corrs) {
-      const Point2D& point2D1 = image1.Point2D(corr.point2D_idx1);
-      const Point2D& point2D2 = image2.Point2D(corr.point2D_idx2);
+    for (const auto& match : matches) {
+      const Point2D& point2D1 = image1.Point2D(match.point2D_idx1);
+      const Point2D& point2D2 = image2.Point2D(match.point2D_idx2);
 
       // Two cases are possible here: both points belong to the same 3D point
       // or to different 3D points. In the former case, there is nothing
@@ -373,14 +345,14 @@ size_t IncrementalTriangulator::Retriangulate(const Options& options) {
 
       CorrData corr_data1;
       corr_data1.image_id = image_id1;
-      corr_data1.point2D_idx = corr.point2D_idx1;
+      corr_data1.point2D_idx = match.point2D_idx1;
       corr_data1.image = &image1;
       corr_data1.camera = &camera1;
       corr_data1.point2D = &point2D1;
 
       CorrData corr_data2;
       corr_data2.image_id = image_id2;
-      corr_data2.point2D_idx = corr.point2D_idx2;
+      corr_data2.point2D_idx = match.point2D_idx2;
       corr_data2.image = &image2;
       corr_data2.camera = &camera2;
       corr_data2.point2D = &point2D2;
@@ -409,16 +381,20 @@ void IncrementalTriangulator::AddModifiedPoint3D(const point3D_t point3D_id) {
   modified_point3D_ids_.insert(point3D_id);
 }
 
-const std::unordered_set<point3D_t>&
-IncrementalTriangulator::GetModifiedPoints3D() {
-  // First remove any missing 3D points from the set.
-  for (auto it = modified_point3D_ids_.begin();
-       it != modified_point3D_ids_.end();) {
-    if (reconstruction_.ExistsPoint3D(*it)) {
-      ++it;
-    } else {
-      modified_point3D_ids_.erase(it++);
+const FlatHashSet<point3D_t>& IncrementalTriangulator::GetModifiedPoints3D() {
+  // First remove any missing 3D points from the set. Collect the ids to remove
+  // and erase them by key rather than via an iterator loop:
+  // modified_point3D_ids_ is a flat (open-addressing) set whose erase can
+  // invalidate other iterators, so an iterator-based erase loop would be
+  // unsafe. Erase-by-key is safe.
+  std::vector<point3D_t> missing_point3D_ids;
+  for (const point3D_t point3D_id : modified_point3D_ids_) {
+    if (!reconstruction_.ExistsPoint3D(point3D_id)) {
+      missing_point3D_ids.push_back(point3D_id);
     }
+  }
+  for (const point3D_t point3D_id : missing_point3D_ids) {
+    modified_point3D_ids_.erase(point3D_id);
   }
   return modified_point3D_ids_;
 }
@@ -602,8 +578,17 @@ size_t IncrementalTriangulator::Merge(const Options& options,
       }
 
       const Point2D& corr_point2D = image.Point2D(corr->point2D_idx);
-      if (!corr_point2D.HasPoint3D() || corr_point2D.point3D_id == point3D_id ||
-          merge_trials_[point3D_id].count(corr_point2D.point3D_id) > 0) {
+      if (!corr_point2D.HasPoint3D() || corr_point2D.point3D_id == point3D_id) {
+        continue;
+      }
+
+      // Canonical (min, max) pair so this merge is keyed identically
+      // regardless of which side of the pair we are visiting from.
+      const std::pair<point3D_t, point3D_t> merge_trial_key =
+          point3D_id < corr_point2D.point3D_id
+              ? std::pair{point3D_id, corr_point2D.point3D_id}
+              : std::pair{corr_point2D.point3D_id, point3D_id};
+      if (!merge_trials_.insert(merge_trial_key).second) {
         continue;
       }
 
@@ -611,9 +596,6 @@ size_t IncrementalTriangulator::Merge(const Options& options,
 
       const Point3D& corr_point3D =
           reconstruction_.Point3D(corr_point2D.point3D_id);
-
-      merge_trials_[point3D_id].insert(corr_point2D.point3D_id);
-      merge_trials_[corr_point2D.point3D_id].insert(point3D_id);
 
       // Weighted average of point locations, depending on track length.
       const Eigen::Vector3d merged_xyz =
@@ -624,7 +606,7 @@ size_t IncrementalTriangulator::Merge(const Options& options,
       // Count number of inlier track elements of the merged track.
       bool merge_success = true;
       for (const Track* track : {&point3D.track, &corr_point3D.track}) {
-        for (const auto test_track_el : track->Elements()) {
+        for (const auto& test_track_el : track->Elements()) {
           const Image& test_image =
               reconstruction_.Image(test_track_el.image_id);
           const Camera& test_camera = *test_image.CameraPtr();
@@ -684,18 +666,36 @@ size_t IncrementalTriangulator::Complete(const Options& options,
 
   const Point3D& point3D = reconstruction_.Point3D(point3D_id);
 
-  std::vector<TrackElement> curr_queue = point3D.track.Elements();
-  std::vector<TrackElement> next_queue;
+  // Reuse member-held BFS scratch buffers across Complete() invocations to
+  // avoid per-call heap allocations.
+  complete_curr_queue_ = point3D.track.Elements();
+  complete_next_queue_.clear();
+  complete_visited_.clear();
+
+  // Seed visited with the existing track members so the BFS never tries to
+  // re-add them.
+  for (const TrackElement& el : complete_curr_queue_) {
+    complete_visited_.insert(std::make_pair(el.image_id, el.point2D_idx));
+  }
 
   const int max_transitivity = options.complete_max_transitivity;
   for (int transitivity = 1; transitivity <= max_transitivity; ++transitivity) {
-    while (!curr_queue.empty()) {
-      const TrackElement queue_elem = curr_queue.back();
-      curr_queue.pop_back();
+    while (!complete_curr_queue_.empty()) {
+      const TrackElement queue_elem = complete_curr_queue_.back();
+      complete_curr_queue_.pop_back();
 
       const auto corr_range = correspondence_graph_->FindCorrespondences(
           queue_elem.image_id, queue_elem.point2D_idx);
       for (const auto* corr = corr_range.beg; corr < corr_range.end; ++corr) {
+        // Two queue entries at the same transitivity level can share
+        // correspondences. Dedupe before the (more expensive) reprojection
+        // check below so we don't redo it for each parent.
+        if (!complete_visited_
+                 .insert(std::make_pair(corr->image_id, corr->point2D_idx))
+                 .second) {
+          continue;
+        }
+
         const Image& image = reconstruction_.Image(corr->image_id);
         if (!image.HasPose()) {
           continue;
@@ -724,18 +724,18 @@ size_t IncrementalTriangulator::Complete(const Options& options,
 
         // Recursively complete track for this new correspondence.
         if (transitivity < max_transitivity) {
-          next_queue.emplace_back(corr->image_id, corr->point2D_idx);
+          complete_next_queue_.emplace_back(corr->image_id, corr->point2D_idx);
         }
 
         num_completed += 1;
       }
     }
 
-    if (next_queue.empty()) {
+    if (complete_next_queue_.empty()) {
       break;
     }
 
-    std::swap(curr_queue, next_queue);
+    std::swap(complete_curr_queue_, complete_next_queue_);
   }
 
   return num_completed;

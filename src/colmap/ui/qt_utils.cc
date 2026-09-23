@@ -1,38 +1,37 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/ui/qt_utils.h"
 
-#include "colmap/sensor/models.h"
-#include "colmap/util/misc.h"
+#include <QApplication>
+#include <QPainter>
+#include <QPalette>
+#include <QPixmap>
+
+#include <QtSvg/QSvgRenderer>
 
 namespace colmap {
+
+QIcon ThemedIcon(const QString& resource_path) {
+  QSvgRenderer renderer(resource_path);
+  if (!renderer.isValid()) {
+    return QIcon(resource_path);
+  }
+
+  // Render at a generous base size so that QIcon produces crisp icons at any
+  // toolbar/menu size, including on high-DPI displays.
+  QPixmap pixmap(64, 64);
+  pixmap.fill(Qt::transparent);
+  QPainter painter(&pixmap);
+  renderer.render(&painter);
+  // The :/media SVGs are flat black silhouettes; recolor them to the palette
+  // foreground color so they stay legible under both light and dark themes.
+  // Qt derives the disabled appearance from this pixmap automatically.
+  painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+  painter.fillRect(pixmap.rect(),
+                   QApplication::palette().color(QPalette::WindowText));
+  painter.end();
+  return QIcon(pixmap);
+}
 
 Eigen::Matrix4f QMatrixToEigen(const QMatrix4x4& matrix) {
   Eigen::Matrix4f eigen;
@@ -57,11 +56,10 @@ QMatrix4x4 EigenToQMatrix(const Eigen::Matrix4f& matrix) {
 QImage BitmapToQImageRGB(const Bitmap& bitmap) {
   QImage image(bitmap.Width(), bitmap.Height(), QImage::Format_RGB32);
   for (int y = 0; y < image.height(); ++y) {
-    QRgb* image_line = (QRgb*)image.scanLine(y);
+    QRgb* image_line = reinterpret_cast<QRgb*>(image.scanLine(y));
     for (int x = 0; x < image.width(); ++x) {
-      BitmapColor<uint8_t> color;
-      if (bitmap.GetPixel(x, y, &color)) {
-        image_line[x] = qRgba(color.r, color.g, color.b, 255);
+      if (const auto color = bitmap.GetPixel(x, y)) {
+        image_line[x] = qRgba(color->r, color->g, color->b, 255);
       }
     }
   }

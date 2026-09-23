@@ -1,55 +1,26 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/estimators/covariance.h"
 
-#include "colmap/estimators/manifold.h"
-
-#include <unordered_set>
+#include "colmap/estimators/cost_functions/manifold.h"
+#include "colmap/util/hash_containers.h"
 
 #include <ceres/crs_matrix.h>
 
 namespace colmap {
 namespace {
 
-bool ComputeSchurComplement(
-    bool estimate_point_covs,
-    bool estimate_pose_covs,
-    bool estimate_other_covs,
-    double damping,
-    int point_num_params,
-    const std::vector<internal::PointParam>& points,
-    const std::vector<internal::PoseParam>& poses,
-    const std::vector<const double*>& others,
-    ceres::Problem& problem,
-    std::unordered_map<point3D_t, Eigen::MatrixXd>& point_covs,
-    Eigen::SparseMatrix<double>& S) {
+bool ComputeSchurComplement(bool estimate_point_covs,
+                            bool estimate_pose_covs,
+                            bool estimate_other_covs,
+                            double damping,
+                            int point_num_params,
+                            const std::vector<internal::PointParam>& points,
+                            const std::vector<internal::PoseParam>& poses,
+                            const std::vector<const double*>& others,
+                            ceres::Problem& problem,
+                            FlatHashMap<point3D_t, Eigen::MatrixXd>& point_covs,
+                            Eigen::SparseMatrix<double>& S) {
   VLOG(2) << "Evaluating the Jacobian for Schur elimination";
 
   ceres::Problem::EvaluateOptions eval_options;
@@ -57,12 +28,8 @@ bool ComputeSchurComplement(
                                         others.size());
   if (estimate_pose_covs || estimate_other_covs) {
     for (const auto& pose : poses) {
-      if (pose.qvec != nullptr) {
-        eval_options.parameter_blocks.push_back(const_cast<double*>(pose.qvec));
-      }
-      if (pose.tvec != nullptr) {
-        eval_options.parameter_blocks.push_back(const_cast<double*>(pose.tvec));
-      }
+      eval_options.parameter_blocks.push_back(
+          const_cast<double*>(pose.cam_from_world));
     }
     for (const double* other : others) {
       eval_options.parameter_blocks.push_back(const_cast<double*>(other));
@@ -222,9 +189,9 @@ Eigen::MatrixXd ExtractCovFromLInverse(const Eigen::MatrixXd& L_inv,
 }  // namespace
 
 BACovariance::BACovariance(
-    std::unordered_map<point3D_t, Eigen::MatrixXd> point_covs,
-    std::unordered_map<image_t, std::pair<int, int>> pose_L_start_size,
-    std::unordered_map<const double*, std::pair<int, int>> other_L_start_size,
+    FlatHashMap<point3D_t, Eigen::MatrixXd> point_covs,
+    NodeHashMap<image_t, std::pair<int, int>> pose_L_start_size,
+    NodeHashMap<const double*, std::pair<int, int>> other_L_start_size,
     Eigen::MatrixXd L_inv)
     : point_covs_(std::move(point_covs)),
       pose_L_start_size_(std::move(pose_L_start_size)),
@@ -304,7 +271,7 @@ std::optional<Eigen::MatrixXd> BACovariance::GetOtherParamsCov(
 std::optional<BACovariance> EstimateBACovariance(
     const BACovarianceOptions& options,
     const Reconstruction& reconstruction,
-    BundleAdjuster& bundle_adjuster) {
+    CeresBundleAdjuster& bundle_adjuster) {
   ceres::Problem& problem = *THROW_CHECK_NOTNULL(bundle_adjuster.Problem());
   return EstimateBACovarianceFromProblem(options, reconstruction, problem);
 }
@@ -336,21 +303,16 @@ std::optional<BACovariance> EstimateBACovarianceFromProblem(
   int point_num_params = 0;
   int pose_num_params = 0;
   int other_num_params = 0;
-  std::unordered_map<image_t, std::pair<int, int>> pose_L_start_size;
-  std::unordered_map<const double*, std::pair<int, int>> other_L_start_size;
+  NodeHashMap<image_t, std::pair<int, int>> pose_L_start_size;
+  NodeHashMap<const double*, std::pair<int, int>> other_L_start_size;
   for (const auto& point : points) {
     point_num_params += ParameterBlockTangentSize(problem, point.xyz);
   }
   if (estimate_pose_covs || estimate_other_covs) {
     pose_L_start_size.reserve(poses.size());
     for (const auto& pose : poses) {
-      int num_params = 0;
-      if (pose.qvec != nullptr) {
-        num_params += ParameterBlockTangentSize(problem, pose.qvec);
-      }
-      if (pose.tvec != nullptr) {
-        num_params += ParameterBlockTangentSize(problem, pose.tvec);
-      }
+      const int num_params =
+          ParameterBlockTangentSize(problem, pose.cam_from_world);
       pose_L_start_size.emplace(pose.image_id,
                                 std::make_pair(pose_num_params, num_params));
       pose_num_params += num_params;
@@ -366,7 +328,7 @@ std::optional<BACovariance> EstimateBACovarianceFromProblem(
     }
   }
 
-  std::unordered_map<point3D_t, Eigen::MatrixXd> point_covs;
+  FlatHashMap<point3D_t, Eigen::MatrixXd> point_covs;
   Eigen::SparseMatrix<double> S;
   if (!ComputeSchurComplement(estimate_point_covs,
                               estimate_pose_covs,
@@ -417,23 +379,12 @@ std::vector<PoseParam> GetPoseParams(const Reconstruction& reconstruction,
   params.reserve(reconstruction.NumImages());
   for (const auto& [image_id, image] : reconstruction.Images()) {
     // TODO(jsch): Add support for non-trivial frames.
-    THROW_CHECK(image.HasTrivialFrame());
+    THROW_CHECK(image.IsRefInFrame());
     const Rigid3d& cam_from_world = image.FramePtr()->RigFromWorld();
-
-    const double* qvec = cam_from_world.rotation.coeffs().data();
-    if (!problem.HasParameterBlock(qvec) ||
-        problem.IsParameterBlockConstant(const_cast<double*>(qvec))) {
-      qvec = nullptr;
-    }
-
-    const double* tvec = cam_from_world.translation.data();
-    if (!problem.HasParameterBlock(tvec) ||
-        problem.IsParameterBlockConstant(const_cast<double*>(tvec))) {
-      tvec = nullptr;
-    }
-
-    if (qvec != nullptr || tvec != nullptr) {
-      params.push_back({image_id, qvec, tvec});
+    if (problem.HasParameterBlock(cam_from_world.params.data()) &&
+        !problem.IsParameterBlockConstant(
+            const_cast<double*>(cam_from_world.params.data()))) {
+      params.push_back({image_id, cam_from_world.params.data()});
     }
   }
   return params;
@@ -457,13 +408,13 @@ std::vector<const double*> GetOtherParams(
     const ceres::Problem& problem,
     const std::vector<PoseParam>& poses,
     const std::vector<PointParam>& points) {
-  std::unordered_set<const double*> image_and_point_params;
+  FlatHashSet<const double*> pose_and_point_params;
+  pose_and_point_params.reserve(poses.size() + points.size());
   for (const auto& pose : poses) {
-    image_and_point_params.insert(pose.qvec);
-    image_and_point_params.insert(pose.tvec);
+    pose_and_point_params.insert(pose.cam_from_world);
   }
   for (const auto& point : points) {
-    image_and_point_params.insert(point.xyz);
+    pose_and_point_params.insert(point.xyz);
   }
 
   std::vector<const double*> params;
@@ -471,7 +422,7 @@ std::vector<const double*> GetOtherParams(
   problem.GetParameterBlocks(&all_params);
   for (const double* param : all_params) {
     if (!problem.IsParameterBlockConstant(const_cast<double*>(param)) &&
-        image_and_point_params.count(param) == 0) {
+        pose_and_point_params.count(param) == 0) {
       params.push_back(param);
     }
   }

@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #pragma once
 
@@ -33,6 +6,8 @@
 #include "colmap/retrieval/utils.h"
 #include "colmap/util/eigen_alignment.h"
 
+#include <filesystem>
+#include <functional>
 #include <memory>
 
 #include <Eigen/Core>
@@ -50,9 +25,6 @@ namespace retrieval {
 //    distinctiveness for location recognition. ACCV 2014.
 class VisualIndex {
  public:
-  using Descriptors = Eigen::RowMajorMatrixXf;
-  using Geometries = FeatureKeypoints;
-
   struct IndexOptions {
     // The number of nearest neighbor visual words that each feature descriptor
     // is assigned to.
@@ -73,7 +45,8 @@ class VisualIndex {
     // is assigned to.
     int num_neighbors = 5;
 
-    // Whether to perform spatial verification after image retrieval.
+    // Perform spatial verification after image retrieval, if > 0.
+    // Defines the number of neighbors to re-rank using spatial verification.
     int num_images_after_verification = 0;
 
     // The number of checks in the nearest neighbor search.
@@ -81,6 +54,9 @@ class VisualIndex {
 
     // Number of threads to use.
     int num_threads = -1;
+
+    // Optional filter for restricting the retrieved image identifiers.
+    std::function<bool(int)> image_id_filter;
   };
 
   struct BuildOptions {
@@ -115,24 +91,28 @@ class VisualIndex {
   virtual int DescDim() const = 0;
   virtual int EmbeddingDim() const = 0;
 
+  // Feature extractor type used to build the index. Returns UNDEFINED if the
+  // index has not been built yet.
+  virtual FeatureExtractorType FeatureType() const = 0;
+
   // Add image to the visual index.
   virtual void Add(const IndexOptions& options,
                    int image_id,
-                   const Geometries& geometries,
-                   const Descriptors& descriptors) = 0;
+                   const FeatureKeypoints& keypoints,
+                   const FeatureDescriptorsFloat& descriptors) = 0;
 
   // Check if an image has been indexed.
   virtual bool IsImageIndexed(int image_id) const = 0;
 
   // Query for most similar images in the visual index.
   virtual void Query(const QueryOptions& options,
-                     const Descriptors& descriptors,
+                     const FeatureDescriptorsFloat& descriptors,
                      std::vector<ImageScore>* image_scores) const = 0;
 
   // Query for most similar images in the visual index.
   virtual void Query(const QueryOptions& options,
-                     const Geometries& geometries,
-                     const Descriptors& descriptors,
+                     const FeatureKeypoints& keypoints,
+                     const FeatureDescriptorsFloat& descriptors,
                      std::vector<ImageScore>* image_scores) const = 0;
 
   // Prepare the index after adding images and before querying.
@@ -141,16 +121,21 @@ class VisualIndex {
   // Build a visual index from a set of training descriptors by quantizing the
   // descriptor space into visual words and compute their Hamming embedding.
   virtual void Build(const BuildOptions& options,
-                     const Descriptors& descriptors) = 0;
+                     const FeatureDescriptorsFloat& descriptors) = 0;
 
   // Read and write the visual index. This can be done for an index with and
   // without indexed images.
-  static std::unique_ptr<VisualIndex> Read(const std::string& vocab_tree_path);
-  virtual void Write(const std::string& path) const = 0;
+  static std::unique_ptr<VisualIndex> Read(
+      const std::filesystem::path& vocab_tree_path);
+  virtual void Write(const std::filesystem::path& path) const = 0;
 
  protected:
-  virtual void ReadFromFaiss(const std::string& path, long offset) = 0;
+  virtual void ReadFromFaiss(const std::filesystem::path& path,
+                             long offset,
+                             FeatureExtractorType feature_type) = 0;
 };
+
+std::ostream& operator<<(std::ostream& stream, const VisualIndex& visual_index);
 
 }  // namespace retrieval
 }  // namespace colmap

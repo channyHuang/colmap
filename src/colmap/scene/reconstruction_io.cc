@@ -1,36 +1,11 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/scene/reconstruction_io.h"
 
 #include "colmap/util/file.h"
+#include "colmap/util/hash_containers.h"
 #include "colmap/util/ply.h"
+#include "colmap/util/string.h"
 #include "colmap/util/types.h"
 
 #include <fstream>
@@ -38,19 +13,18 @@
 namespace colmap {
 
 bool ExportNVM(const Reconstruction& reconstruction,
-               const std::string& path,
+               const std::filesystem::path& path,
                bool skip_distortion) {
   std::ofstream file(path, std::ios::trunc);
   THROW_CHECK_FILE_OPEN(file, path);
 
-  // Ensure that we don't lose any precision by storing in text.
-  file.precision(17);
+  SetFullPrecTextStream(file);
 
   // White space added for compatibility with Meshlab.
   file << "NVM_V3 \n" << " \n";
   file << reconstruction.NumRegImages() << "  \n";
 
-  std::unordered_map<image_t, size_t> image_id_to_idx_;
+  NodeHashMap<image_t, size_t> image_id_to_idx_;
   size_t image_idx = 0;
 
   for (const auto image_id : reconstruction.RegImageIds()) {
@@ -74,10 +48,10 @@ bool ExportNVM(const Reconstruction& reconstruction,
 
     file << image.Name() << " ";
     file << camera.MeanFocalLength() << " ";
-    file << image.CamFromWorld().rotation.w() << " ";
-    file << image.CamFromWorld().rotation.x() << " ";
-    file << image.CamFromWorld().rotation.y() << " ";
-    file << image.CamFromWorld().rotation.z() << " ";
+    file << image.CamFromWorld().rotation().w() << " ";
+    file << image.CamFromWorld().rotation().x() << " ";
+    file << image.CamFromWorld().rotation().y() << " ";
+    file << image.CamFromWorld().rotation().z() << " ";
     file << proj_center.x() << " ";
     file << proj_center.y() << " ";
     file << proj_center.z() << " ";
@@ -99,8 +73,9 @@ bool ExportNVM(const Reconstruction& reconstruction,
     file << static_cast<int>(point3D.second.color(2)) << " ";
 
     std::ostringstream line;
+    SetFullPrecTextStream(line);
 
-    std::unordered_set<image_t> image_ids;
+    FlatHashSet<image_t> image_ids;
     for (const auto& track_el : point3D.second.track.Elements()) {
       // Make sure that each point only has a single observation per image,
       // since VisualSfM does not support with multiple observations.
@@ -126,7 +101,7 @@ bool ExportNVM(const Reconstruction& reconstruction,
 }
 
 bool ExportCam(const Reconstruction& reconstruction,
-               const std::string& path,
+               const std::filesystem::path& path,
                bool skip_distortion) {
   reconstruction.CreateImageDirs(path);
   for (const auto image_id : reconstruction.RegImageIds()) {
@@ -135,13 +110,12 @@ bool ExportCam(const Reconstruction& reconstruction,
     const struct Camera& camera = reconstruction.Camera(image.CameraId());
 
     SplitFileExtension(image.Name(), &name, &ext);
-    name = JoinPaths(path, name.append(".cam"));
-    std::ofstream file(name, std::ios::trunc);
+    const auto name_path = path / name.append(".cam");
+    std::ofstream file(name_path, std::ios::trunc);
 
-    THROW_CHECK_FILE_OPEN(file, name);
+    THROW_CHECK_FILE_OPEN(file, name_path);
 
-    // Ensure that we don't lose any precision by storing in text.
-    file.precision(17);
+    SetFullPrecTextStream(file);
 
     double k1, k2;
     if (skip_distortion ||
@@ -178,10 +152,11 @@ bool ExportCam(const Reconstruction& reconstruction,
       focal_length = fx / camera.width;
     }
 
-    const Eigen::Matrix3d R = image.CamFromWorld().rotation.toRotationMatrix();
-    file << image.CamFromWorld().translation.x() << " "
-         << image.CamFromWorld().translation.y() << " "
-         << image.CamFromWorld().translation.z() << " " << R(0, 0) << " "
+    const Eigen::Matrix3d R =
+        image.CamFromWorld().rotation().toRotationMatrix();
+    file << image.CamFromWorld().translation().x() << " "
+         << image.CamFromWorld().translation().y() << " "
+         << image.CamFromWorld().translation().z() << " " << R(0, 0) << " "
          << R(0, 1) << " " << R(0, 2) << " " << R(1, 0) << " " << R(1, 1) << " "
          << R(1, 2) << " " << R(2, 0) << " " << R(2, 1) << " " << R(2, 2)
          << '\n';
@@ -194,32 +169,32 @@ bool ExportCam(const Reconstruction& reconstruction,
 }
 
 bool ExportRecon3D(const Reconstruction& reconstruction,
-                   const std::string& path,
+                   const std::filesystem::path& path,
                    bool skip_distortion) {
-  std::string base_path = EnsureTrailingSlash(StringReplace(path, "\\", "/"));
+  CreateDirIfNotExists(path);
+  const auto base_path = path / "Recon";
   CreateDirIfNotExists(base_path);
-  base_path = base_path.append("Recon/");
-  CreateDirIfNotExists(base_path);
-  std::string synth_path = base_path + "synth_0.out";
-  std::string image_list_path = base_path + "urd-images.txt";
-  std::string image_map_path = base_path + "imagemap_0.txt";
+  const auto synth_path = base_path / "synth_0.out";
+  const auto image_list_path = base_path / "urd-images.txt";
+  const auto image_map_path = base_path / "imagemap_0.txt";
 
   std::ofstream synth_file(synth_path, std::ios::trunc);
   THROW_CHECK_FILE_OPEN(synth_file, synth_path);
   std::ofstream image_list_file(image_list_path, std::ios::trunc);
   THROW_CHECK_FILE_OPEN(image_list_file, image_list_path);
+  SetFullPrecTextStream(image_list_file);
   std::ofstream image_map_file(image_map_path, std::ios::trunc);
   THROW_CHECK_FILE_OPEN(image_map_file, image_map_path);
+  SetFullPrecTextStream(image_map_file);
 
-  // Ensure that we don't lose any precision by storing in text.
-  synth_file.precision(17);
+  SetFullPrecTextStream(synth_file);
 
   // Write header info
   synth_file << "colmap 1.0\n";
   synth_file << reconstruction.NumRegImages() << " "
              << reconstruction.NumPoints3D() << '\n';
 
-  std::unordered_map<image_t, size_t> image_id_to_idx_;
+  NodeHashMap<image_t, size_t> image_id_to_idx_;
   size_t image_idx = 0;
 
   // Write image/camera info
@@ -248,8 +223,8 @@ bool ExportRecon3D(const Reconstruction& reconstruction,
     const double scale = 1.0 / (double)std::max(camera.width, camera.height);
     synth_file << scale * camera.MeanFocalLength() << " " << k1 << " " << k2
                << '\n';
-    synth_file << image.CamFromWorld().rotation.toRotationMatrix() << '\n';
-    synth_file << image.CamFromWorld().translation.transpose() << '\n';
+    synth_file << image.CamFromWorld().rotation().toRotationMatrix() << '\n';
+    synth_file << image.CamFromWorld().translation().transpose() << '\n';
 
     image_id_to_idx_[image_id] = image_idx;
     image_list_file << image.Name() << '\n'
@@ -270,8 +245,9 @@ bool ExportRecon3D(const Reconstruction& reconstruction,
                << static_cast<int>(p.color(2)) << '\n';
 
     std::ostringstream line;
+    SetFullPrecTextStream(line);
 
-    std::unordered_set<image_t> image_ids;
+    FlatHashSet<image_t> image_ids;
     for (const auto& track_el : p.track.Elements()) {
       // Make sure that each point only has a single observation per image,
       // since VisualSfM does not support with multiple observations.
@@ -305,8 +281,8 @@ bool ExportRecon3D(const Reconstruction& reconstruction,
 }
 
 bool ExportBundler(const Reconstruction& reconstruction,
-                   const std::string& path,
-                   const std::string& list_path,
+                   const std::filesystem::path& path,
+                   const std::filesystem::path& list_path,
                    bool skip_distortion) {
   std::ofstream file(path, std::ios::trunc);
   THROW_CHECK_FILE_OPEN(file, path);
@@ -314,15 +290,14 @@ bool ExportBundler(const Reconstruction& reconstruction,
   std::ofstream list_file(list_path, std::ios::trunc);
   THROW_CHECK_FILE_OPEN(list_file, list_path);
 
-  // Ensure that we don't lose any precision by storing in text.
-  file.precision(17);
+  SetFullPrecTextStream(file);
 
   file << "# Bundle file v0.3\n";
 
   file << reconstruction.NumRegImages() << " " << reconstruction.NumPoints3D()
        << '\n';
 
-  std::unordered_map<image_t, size_t> image_id_to_idx_;
+  NodeHashMap<image_t, size_t> image_id_to_idx_;
   size_t image_idx = 0;
 
   for (const image_t image_id : reconstruction.RegImageIds()) {
@@ -349,14 +324,15 @@ bool ExportBundler(const Reconstruction& reconstruction,
 
     file << camera.MeanFocalLength() << " " << k1 << " " << k2 << '\n';
 
-    const Eigen::Matrix3d R = image.CamFromWorld().rotation.toRotationMatrix();
+    const Eigen::Matrix3d R =
+        image.CamFromWorld().rotation().toRotationMatrix();
     file << R(0, 0) << " " << R(0, 1) << " " << R(0, 2) << '\n';
     file << -R(1, 0) << " " << -R(1, 1) << " " << -R(1, 2) << '\n';
     file << -R(2, 0) << " " << -R(2, 1) << " " << -R(2, 2) << '\n';
 
-    file << image.CamFromWorld().translation.x() << " ";
-    file << -image.CamFromWorld().translation.y() << " ";
-    file << -image.CamFromWorld().translation.z() << '\n';
+    file << image.CamFromWorld().translation().x() << " ";
+    file << -image.CamFromWorld().translation().y() << " ";
+    file << -image.CamFromWorld().translation().z() << '\n';
 
     list_file << image.Name() << '\n';
 
@@ -374,6 +350,7 @@ bool ExportBundler(const Reconstruction& reconstruction,
     file << static_cast<int>(point3D.second.color(2)) << '\n';
 
     std::ostringstream line;
+    SetFullPrecTextStream(line);
 
     line << point3D.second.track.Length() << " ";
 
@@ -404,7 +381,8 @@ bool ExportBundler(const Reconstruction& reconstruction,
   return true;
 }
 
-void ExportPLY(const Reconstruction& reconstruction, const std::string& path) {
+void ExportPLY(const Reconstruction& reconstruction,
+               const std::filesystem::path& path) {
   const auto ply_points = reconstruction.ConvertToPLY();
 
   const bool kWriteNormal = false;
@@ -413,12 +391,13 @@ void ExportPLY(const Reconstruction& reconstruction, const std::string& path) {
 }
 
 void ExportVRML(const Reconstruction& reconstruction,
-                const std::string& images_path,
-                const std::string& points3D_path,
+                const std::filesystem::path& images_path,
+                const std::filesystem::path& points3D_path,
                 const double image_scale,
                 const Eigen::Vector3d& image_rgb) {
   std::ofstream images_file(images_path, std::ios::trunc);
   THROW_CHECK_FILE_OPEN(images_file, images_path);
+  SetFullPrecTextStream(images_file);
 
   const double six = image_scale * 0.15;
   const double siy = image_scale * 0.1;
@@ -500,6 +479,7 @@ void ExportVRML(const Reconstruction& reconstruction,
 
   std::ofstream points3D_file(points3D_path, std::ios::trunc);
   THROW_CHECK_FILE_OPEN(points3D_file, points3D_path);
+  SetFullPrecTextStream(points3D_file);
 
   points3D_file << "#VRML V2.0 utf8\n";
   points3D_file << "Background { skyColor [1.0 1.0 1.0] } \n";

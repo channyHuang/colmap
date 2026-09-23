@@ -1,4 +1,7 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include "colmap/math/random.h"
+#include "colmap/util/hash_containers.h"
 #include "colmap/util/version.h"
 
 #include "pycolmap/helpers.h"
@@ -15,19 +18,24 @@ using namespace pybind11::literals;
 namespace py = pybind11;
 
 void BindEstimators(py::module& m);
+void BindFeatureTypes(py::module& m);
 void BindFeature(py::module& m);
 void BindGeometry(py::module& m);
 void BindImage(py::module& m);
 void BindOptim(py::module& m);
 void BindPipeline(py::module& m);
 void BindRetrieval(py::module& m);
+void BindSceneTypes(py::module& m);
 void BindScene(py::module& m);
 void BindSensor(py::module& m);
 void BindSfm(py::module& m);
+#if defined(COLMAP_MVS_ENABLED)
 void BindMvs(py::module& m);
+#endif
 void BindUtil(py::module& m);
 
-PYBIND11_MODULE(_core, m) {
+// Explicitly declare that the extension requires the GIL (the default).
+PYBIND11_MODULE(_core, m, py::mod_gil_used()) {
   m.doc() = "COLMAP plugin";
 #ifdef VERSION_INFO
   m.attr("__version__") = py::str(VERSION_INFO);
@@ -38,7 +46,6 @@ PYBIND11_MODULE(_core, m) {
   m.attr("has_cuda") = IsGPU(Device::AUTO);
   m.attr("COLMAP_version") = py::str(GetVersionInfo());
   m.attr("COLMAP_build") = py::str(GetBuildInfo());
-
   auto PyDevice = py::enum_<Device>(m, "Device")
                       .value("auto", Device::AUTO)
                       .value("cpu", Device::CPU)
@@ -49,13 +56,17 @@ PYBIND11_MODULE(_core, m) {
   BindGeometry(m);
   BindOptim(m);
   BindSensor(m);
+  BindFeatureTypes(m);
+  BindSceneTypes(m);
+  BindFeature(m);
   BindScene(m);
   BindImage(m);
   BindEstimators(m);
-  BindFeature(m);
   BindRetrieval(m);
   BindSfm(m);
+#if defined(COLMAP_MVS_ENABLED)
   BindMvs(m);
+#endif
   BindPipeline(m);
 
   m.def("set_random_seed",

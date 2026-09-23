@@ -1,43 +1,25 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #pragma once
 
+#include "colmap/util/hash_containers.h"
 #include "colmap/util/logging.h"
 
-#include <unordered_map>
 #include <vector>
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
 
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/boykov_kolmogorov_max_flow.hpp>
 #include <boost/graph/graph_traits.hpp>
 #include <boost/graph/one_bit_color_map.hpp>
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 namespace colmap {
 
@@ -50,7 +32,7 @@ void ComputeMinGraphCutStoerWagner(
 
 // Compute the normalized min-cut of an undirected graph using Metis.
 // Partitions the graph into clusters and returns the cluster labels per vertex.
-std::unordered_map<int, int> ComputeNormalizedMinGraphCut(
+NodeHashMap<int, int> ComputeNormalizedMinGraphCut(
     const std::vector<std::pair<int, int>>& edges,
     const std::vector<int>& weights,
     int num_parts);
@@ -62,11 +44,10 @@ std::unordered_map<int, int> ComputeNormalizedMinGraphCut(
 template <typename node_t, typename value_t>
 class MinSTGraphCut {
  public:
-  typedef boost::
-      adjacency_list_traits<boost::vecS, boost::vecS, boost::directedS>
-          graph_traits_t;
-  typedef graph_traits_t::edge_descriptor edge_descriptor_t;
-  typedef graph_traits_t::vertices_size_type vertices_size_t;
+  using graph_traits_t =
+      boost::adjacency_list_traits<boost::vecS, boost::vecS, boost::directedS>;
+  using edge_descriptor_t = graph_traits_t::edge_descriptor;
+  using vertices_size_t = graph_traits_t::vertices_size_type;
 
   struct Edge {
     value_t capacity;
@@ -74,9 +55,8 @@ class MinSTGraphCut {
     edge_descriptor_t reverse;
   };
 
-  typedef boost::
-      adjacency_list<boost::vecS, boost::vecS, boost::directedS, size_t, Edge>
-          graph_t;
+  using graph_t = boost::
+      adjacency_list<boost::vecS, boost::vecS, boost::directedS, size_t, Edge>;
 
   explicit MinSTGraphCut(size_t num_nodes);
 

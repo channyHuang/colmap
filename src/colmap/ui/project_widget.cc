@@ -1,31 +1,4 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/ui/project_widget.h"
 
@@ -53,7 +26,7 @@ ProjectWidget::ProjectWidget(QWidget* parent, OptionManager* options)
           &ProjectWidget::SelectExistingDatabasePath);
   database_path_text_ = new QLineEdit(this);
   database_path_text_->setText(
-      QString::fromStdString(*options_->database_path));
+      QString::fromStdString(options_->database_path->string()));
 
   // Image path.
   QPushButton* image_path_select = new QPushButton(tr("Select"), this);
@@ -62,7 +35,8 @@ ProjectWidget::ProjectWidget(QWidget* parent, OptionManager* options)
           this,
           &ProjectWidget::SelectImagePath);
   image_path_text_ = new QLineEdit(this);
-  image_path_text_->setText(QString::fromStdString(*options_->image_path));
+  image_path_text_->setText(
+      QString::fromStdString(options_->image_path->string()));
 
   // Save button.
   QPushButton* create_button = new QPushButton(tr("Save"), this);
@@ -92,20 +66,20 @@ void ProjectWidget::Reset() {
   image_path_text_->clear();
 }
 
-std::string ProjectWidget::GetDatabasePath() const {
+std::filesystem::path ProjectWidget::GetDatabasePath() const {
   return database_path_text_->text().toUtf8().constData();
 }
 
-std::string ProjectWidget::GetImagePath() const {
+std::filesystem::path ProjectWidget::GetImagePath() const {
   return image_path_text_->text().toUtf8().constData();
 }
 
-void ProjectWidget::SetDatabasePath(const std::string& path) {
-  database_path_text_->setText(QString::fromStdString(path));
+void ProjectWidget::SetDatabasePath(const std::filesystem::path& path) {
+  database_path_text_->setText(QString::fromStdString(path.string()));
 }
 
-void ProjectWidget::SetImagePath(const std::string& path) {
-  image_path_text_->setText(QString::fromStdString(path));
+void ProjectWidget::SetImagePath(const std::filesystem::path& path) {
+  image_path_text_->setText(QString::fromStdString(path.string()));
 }
 
 void ProjectWidget::Save() {
@@ -168,7 +142,7 @@ QString ProjectWidget::DefaultDirectory() {
   if (!options_->project_path->empty()) {
     const auto parent_path = GetParentDir(*options_->project_path);
     if (ExistsDir(parent_path)) {
-      return QString::fromStdString(parent_path);
+      return QString::fromStdString(parent_path.string());
     }
   }
 
@@ -176,7 +150,7 @@ QString ProjectWidget::DefaultDirectory() {
     const auto parent_path =
         GetParentDir(database_path_text_->text().toUtf8().constData());
     if (ExistsDir(parent_path)) {
-      return QString::fromStdString(parent_path);
+      return QString::fromStdString(parent_path.string());
     }
   }
 

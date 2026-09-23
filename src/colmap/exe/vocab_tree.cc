@@ -1,100 +1,20 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/exe/vocab_tree.h"
 
-#include "colmap/controllers/feature_matching.h"
 #include "colmap/controllers/option_manager.h"
-#include "colmap/feature/sift.h"
 #include "colmap/feature/utils.h"
-#include "colmap/optim/random_sampler.h"
-#include "colmap/retrieval/resources.h"
 #include "colmap/retrieval/visual_index.h"
 #include "colmap/scene/database.h"
 #include "colmap/util/file.h"
-#include "colmap/util/opengl_utils.h"
-
-#include <numeric>
+#include "colmap/util/hash_containers.h"
+#include "colmap/util/timer.h"
 
 namespace colmap {
 namespace {
 
-// Loads descriptors for training from the database. Loads all descriptors from
-// the database if max_num_images < 0, otherwise the descriptors of a random
-// subset of images are selected.
-retrieval::VisualIndex::Descriptors LoadRandomDatabaseDescriptors(
-    const std::string& database_path, const int max_num_images) {
-  auto database = Database::Open(database_path);
-  DatabaseTransaction database_transaction(database.get());
-
-  const std::vector<Image> images = database->ReadAllImages();
-
-  retrieval::VisualIndex::Descriptors descriptors;
-
-  std::vector<size_t> image_idxs;
-  size_t num_descriptors = 0;
-  if (max_num_images < 0) {
-    // All images in the database.
-    image_idxs.resize(images.size());
-    std::iota(image_idxs.begin(), image_idxs.end(), 0);
-    num_descriptors = database->NumDescriptors();
-  } else {
-    // Random subset of images in the database.
-    THROW_CHECK_LE(max_num_images, images.size());
-    RandomSampler random_sampler(max_num_images);
-    random_sampler.Initialize(images.size());
-    random_sampler.Sample(&image_idxs);
-    for (const size_t image_idx : image_idxs) {
-      const auto& image = images.at(image_idx);
-      num_descriptors += database->NumDescriptorsForImage(image.ImageId());
-    }
-  }
-
-  descriptors.resize(num_descriptors, 128);
-
-  size_t descriptor_row = 0;
-  for (const size_t image_idx : image_idxs) {
-    const auto& image = images.at(image_idx);
-    const FeatureDescriptors image_descriptors =
-        database->ReadDescriptors(image.ImageId());
-    descriptors.block(descriptor_row, 0, image_descriptors.rows(), 128) =
-        image_descriptors.cast<float>();
-    descriptor_row += image_descriptors.rows();
-  }
-
-  THROW_CHECK_EQ(descriptor_row, num_descriptors);
-
-  return descriptors;
-}
-
-std::vector<Image> ReadVocabTreeRetrievalImageList(const std::string& path,
-                                                   Database* database) {
+std::vector<Image> ReadVocabTreeRetrievalImageList(
+    const std::filesystem::path& path, Database* database) {
   std::vector<Image> images;
   if (path.empty()) {
     images.reserve(database->NumImages());
@@ -118,9 +38,9 @@ std::vector<Image> ReadVocabTreeRetrievalImageList(const std::string& path,
 }  // namespace
 
 int RunVocabTreeBuilder(int argc, char** argv) {
-  std::string vocab_tree_path = kDefaultVocabTreeUri;
+  std::filesystem::path vocab_tree_path;
   retrieval::VisualIndex::BuildOptions build_options;
-  int max_num_images = -1;
+  int max_num_descriptors = -1;
 
   OptionManager options;
   options.AddDatabaseOptions();
@@ -130,16 +50,17 @@ int RunVocabTreeBuilder(int argc, char** argv) {
   options.AddDefaultOption("num_checks", &build_options.num_checks);
   options.AddDefaultOption("num_threads", &build_options.num_threads);
   options.AddDefaultOption("num_rounds", &build_options.num_rounds);
-  options.AddDefaultOption("max_num_images", &max_num_images);
+  options.AddDefaultOption("max_num_descriptors", &max_num_descriptors);
   if (!options.Parse(argc, argv)) {
     return EXIT_FAILURE;
   }
 
   LOG(INFO) << "Loading descriptors...";
-  const auto descriptors =
-      LoadRandomDatabaseDescriptors(*options.database_path, max_num_images);
-  LOG(INFO) << "=> Loaded a total of " << descriptors.rows() << " descriptors";
-  THROW_CHECK_GT(descriptors.size(), 0);
+  const auto descriptors = LoadRandomDatabaseDescriptors(
+      *Database::Open(*options.database_path), max_num_descriptors);
+  LOG(INFO) << "=> Loaded a total of " << descriptors.data.rows()
+            << " descriptors";
+  THROW_CHECK_GT(descriptors.data.size(), 0);
 
   auto visual_index = retrieval::VisualIndex::Create();
 
@@ -156,10 +77,10 @@ int RunVocabTreeBuilder(int argc, char** argv) {
 }
 
 int RunVocabTreeRetriever(int argc, char** argv) {
-  std::string vocab_tree_path = kDefaultVocabTreeUri;
-  std::string database_image_list_path;
-  std::string query_image_list_path;
-  std::string output_index_path;
+  std::filesystem::path vocab_tree_path;
+  std::filesystem::path database_image_list_path;
+  std::filesystem::path query_image_list_path;
+  std::filesystem::path output_index_path;
   retrieval::VisualIndex::QueryOptions query_options;
   retrieval::VisualIndex::IndexOptions index_options;
   int max_num_features = -1;
@@ -216,14 +137,14 @@ int RunVocabTreeRetriever(int argc, char** argv) {
         database->ReadKeypoints(database_images[i].ImageId());
     FeatureDescriptors descriptors =
         database->ReadDescriptors(database_images[i].ImageId());
-    if (max_num_features > 0 && descriptors.rows() > max_num_features) {
+    if (max_num_features > 0 && descriptors.data.rows() > max_num_features) {
       ExtractTopScaleFeatures(&keypoints, &descriptors, max_num_features);
     }
 
     visual_index->Add(index_options,
                       database_images[i].ImageId(),
                       keypoints,
-                      descriptors.cast<float>());
+                      descriptors.ToFloat());
 
     LOG(INFO) << StringPrintf(" in %.3fs", timer.ElapsedSeconds());
   }
@@ -245,7 +166,7 @@ int RunVocabTreeRetriever(int argc, char** argv) {
   // Perform image queries
   //////////////////////////////////////////////////////////////////////////////
 
-  std::unordered_map<image_t, const Image*> image_id_to_image;
+  NodeHashMap<image_t, const Image*> image_id_to_image;
   image_id_to_image.reserve(database_images.size());
   for (const auto& image : database_images) {
     image_id_to_image.emplace(image.ImageId(), &image);
@@ -263,13 +184,13 @@ int RunVocabTreeRetriever(int argc, char** argv) {
 
     auto keypoints = database->ReadKeypoints(query_images[i].ImageId());
     auto descriptors = database->ReadDescriptors(query_images[i].ImageId());
-    if (max_num_features > 0 && descriptors.rows() > max_num_features) {
+    if (max_num_features > 0 && descriptors.data.rows() > max_num_features) {
       ExtractTopScaleFeatures(&keypoints, &descriptors, max_num_features);
     }
 
     std::vector<retrieval::ImageScore> image_scores;
     visual_index->Query(
-        query_options, keypoints, descriptors.cast<float>(), &image_scores);
+        query_options, keypoints, descriptors.ToFloat(), &image_scores);
 
     LOG(INFO) << StringPrintf(" in %.3fs", timer.ElapsedSeconds());
     for (const auto& image_score : image_scores) {

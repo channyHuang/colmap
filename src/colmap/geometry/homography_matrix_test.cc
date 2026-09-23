@@ -1,38 +1,11 @@
-// Copyright (c), ETH Zurich and UNC Chapel Hill.
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//
-//     * Redistributions in binary form must reproduce the above copyright
-//       notice, this list of conditions and the following disclaimer in the
-//       documentation and/or other materials provided with the distribution.
-//
-//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-//       its contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "colmap/geometry/homography_matrix.h"
 
 #include "colmap/geometry/rigid3_matchers.h"
+#include "colmap/math/random_eigen.h"
 #include "colmap/util/eigen_alignment.h"
 #include "colmap/util/eigen_matchers.h"
-#include "colmap/util/logging.h"
 
 #include <cmath>
 
@@ -72,9 +45,9 @@ TEST(DecomposeHomographyMatrix, Nominal) {
   bool ref_solution_exists = false;
   for (size_t i = 0; i < 4; ++i) {
     const double kEps = 1e-6;
-    if ((cams2_from_cams1[i].rotation.toRotationMatrix() - ref_rotation)
+    if ((cams2_from_cams1[i].rotation().toRotationMatrix() - ref_rotation)
                 .norm() < kEps &&
-        (cams2_from_cams1[i].translation - ref_translation).norm() < kEps &&
+        (cams2_from_cams1[i].translation() - ref_translation).norm() < kEps &&
         (normals[i] - ref_normal).norm() < kEps) {
       ref_solution_exists = true;
       break;
@@ -91,7 +64,7 @@ TEST(DecomposeHomographyMatrix, Random) {
   const Eigen::Matrix3d identity = Eigen::Matrix3d::Identity();
 
   for (int i = 0; i < kNumIters; ++i) {
-    const Eigen::Matrix3d H = Eigen::Matrix3d::Random();
+    const Eigen::Matrix3d H = RandomEigenMatrixd<3, 3>();
 
     if (std::abs(H.determinant()) < epsilon) {
       continue;
@@ -108,16 +81,16 @@ TEST(DecomposeHomographyMatrix, Random) {
     // Test that each candidate rotation is a rotation
     for (const Rigid3d& cam2_from_cam1 : cams2_from_cams1) {
       const Eigen::Matrix3d orthog_error =
-          cam2_from_cam1.rotation.toRotationMatrix().transpose() *
-              cam2_from_cam1.rotation.toRotationMatrix() -
+          cam2_from_cam1.rotation().toRotationMatrix().transpose() *
+              cam2_from_cam1.rotation().toRotationMatrix() -
           identity;
 
-      // Check that cam2_from_cam1.rotation.toRotationMatrix() is an orthognal
+      // Check that cam2_from_cam1.rotation().toRotationMatrix() is an orthognal
       // matrix
       EXPECT_LT(orthog_error.lpNorm<Eigen::Infinity>(), epsilon);
 
       // Check determinant is 1
-      EXPECT_NEAR(cam2_from_cam1.rotation.toRotationMatrix().determinant(),
+      EXPECT_NEAR(cam2_from_cam1.rotation().toRotationMatrix().determinant(),
                   1.0,
                   epsilon);
     }
@@ -144,7 +117,7 @@ TEST(PoseFromHomographyMatrix, Nominal) {
   std::vector<Eigen::Vector3d> rays2;
   for (const auto& ray1 : rays1) {
     const Eigen::Vector3d ray2 = H * ray1;
-    CHECK_GT(ray2.z(), 0);
+    ASSERT_GT(ray2.z(), 0);
     rays2.push_back(ray2.normalized());
   }
 
@@ -155,7 +128,8 @@ TEST(PoseFromHomographyMatrix, Nominal) {
       H, K1, K2, rays1, rays2, &cam2_from_cam1, &normal, &points3D);
 
   EXPECT_THAT(
-      Rigid3d(cam2_from_cam1.rotation, cam2_from_cam1.translation.normalized()),
+      Rigid3d(cam2_from_cam1.rotation(),
+              cam2_from_cam1.translation().normalized()),
       Rigid3dNear(
           Rigid3d(ref_rotation, ref_translation.normalized()), 1e-6, 1e-6));
 
